@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>阅读 · Agent 工作流文献管理系统</title>
+    <link rel="stylesheet" href="assets/app.css" />
+    <link rel="stylesheet" href="assets/reader.css" />
+    <link rel="stylesheet" href="assets/vendor/md/github.min.css" />
+  </head>
+  <body class="reader-body">
+    <header class="topbar">
+      <nav class="crumbs" aria-label="位置">
+        <a href="index.html">总览</a>
+        <span class="sep">/</span>
+        <a href="#" id="crumbWork">文献详情</a>
+        <span class="sep">/</span>
+        <span class="cur" id="docCrumb">阅读</span>
+      </nav>
+      <span class="brand" id="docTitle">阅读</span>
+      <span class="hint" id="docMeta"></span>
+      <nav class="topnav">
+        <a href="index.html">总览</a>
+        <a href="settings.html">设置</a>
+      </nav>
+    </header>
+
+    <div class="reader-toolbar">
+      <select id="engine"><option value="">（未加载）</option></select>
+      <select id="tgtLang">
+        <option value="zh-CN">简体中文</option>
+        <option value="zh-TW">繁体中文</option>
+        <option value="en">English</option>
+        <option value="ja">日本語</option>
+      </select>
+      <button id="btnTranslate" class="primary">全文翻译</button>
+      <button id="btnContinue">继续翻译</button>
+      <button id="btnRefine" class="ghost" title="用大模型复核每个段落的真实角色与层级（标题/正文/图注/引用…），让排版更贴近原文">AI 精排</button>
+      <button id="btnRefineCancel" hidden>取消精排</button>
+      <button id="btnCancel" hidden>取消</button>
+      <span class="sep"></span>
+      <div class="seg" role="group" aria-label="显示模式">
+        <label class="seg-item"><input type="radio" name="mode" value="dual" checked /><span>对照</span></label>
+        <label class="seg-item"><input type="radio" name="mode" value="dst" /><span>仅译文</span></label>
+      </div>
+      <span class="spacer"></span>
+      <span class="hint" id="progressLine">—</span>
+      <a class="btn" id="btnExport" href="#">导出双语 Markdown</a>
+      <a class="btn" id="btnRaw" href="#" target="_blank" rel="noreferrer">在新标签打开 PDF</a>
+    </div>
+
+    <main class="reader-main" id="main">
+      <section class="pdf-pane" id="pdfPane">
+        <div id="pages"></div>
+      </section>
+      <div class="pane-splitter" id="paneSplitter" role="separator" aria-orientation="vertical" tabindex="0" title="拖动调节左右宽度（←/→ 微调）"></div>
+      <aside class="dst-pane" id="dstPane">
+        <div class="dst-head">
+          <span class="dst-title">译文</span>
+          <div class="dst-font" role="group" aria-label="字号调节">
+            <button type="button" class="icon-btn" id="fontDown" title="缩小字号">A−</button>
+            <span class="font-val" id="fontVal">100%</span>
+            <button type="button" class="icon-btn" id="fontReset" title="恢复默认字号">A</button>
+            <button type="button" class="icon-btn" id="fontUp" title="放大字号">A+</button>
+          </div>
+        </div>
+        <div class="dst-toolbar">
+          <input type="search" id="dstSearch" class="dst-search" placeholder="搜索译文 / 原文…" aria-label="搜索译文" />
+          <button type="button" class="icon-btn" id="dstLocate" title="跳到 PDF 当前页对应的译文">定位本页</button>
+        </div>
+        <div class="hint" id="dstHint">点段落可跳回原文高亮</div>
+        <div id="dstList"></div>
+      </aside>
+    </main>
+
+    <!-- PDF 阅读 HUD：页码翻页 + 缩放（桌面端左下角常驻） -->
+    <div class="pdf-hud" id="pdfHud" aria-label="PDF 阅读控制">
+      <div class="pdf-nav">
+        <button type="button" class="icon-btn" id="pdfPrev" title="上一页">‹</button>
+        <span id="pdfPageLabel">1 / 1</span>
+        <button type="button" class="icon-btn" id="pdfNext" title="下一页">›</button>
+      </div>
+      <div class="pdf-zoom">
+        <button type="button" class="icon-btn" id="zoomOut" title="缩小 PDF">−</button>
+        <span id="zoomVal">135%</span>
+        <button type="button" class="icon-btn" id="zoomIn" title="放大 PDF">＋</button>
+      </div>
+    </div>
+
+    <button class="chat-toggle" id="chatToggle" aria-expanded="false" title="展开 / 收起 对话 Agent（右侧抽屉）">对话</button>
+    <aside class="chat-drawer" id="chatDrawer" aria-hidden="true">
+      <div class="chat-resizer" id="chatResizer" role="separator" aria-orientation="vertical" tabindex="0" title="拖动调节对话栏宽度（←/→ 微调）"></div>
+      <div class="chat-head">
+        <span class="chat-title">对话 Agent</span>
+        <button type="button" class="chat-close" id="chatClose" aria-label="收起对话">×</button>
+      </div>
+      <div class="chat-toolbar">
+        <select id="chatSelect"><option value="">（新会话）</option></select>
+        <button type="button" id="btnNewChat" class="icon-btn" title="新建会话">＋</button>
+        <button type="button" id="btnAskSelection" class="icon-btn" title="先在高亮原文里选中文字，再点这里针对该段提问">⤷</button>
+      </div>
+      <div id="chatMsgs" class="chat-msgs"></div>
+      <div class="chat-quick" id="chatQuick" aria-label="快捷提问">
+        <button type="button" data-q="请用 3 条要点总结这篇文献的核心贡献与创新点。">总结核心贡献</button>
+        <button type="button" data-q="本文用了什么研究方法 / 模型 / 实验设置？">研究方法</button>
+        <button type="button" data-q="本文的局限与未来工作方向是什么？">局限与展望</button>
+        <button type="button" data-q="请解释我选中的这段话，并说明它在全文中的作用。">解释选段</button>
+      </div>
+      <div class="chat-input">
+        <div class="chat-pending" id="chatPending" hidden></div>
+        <textarea id="chatText" rows="2" placeholder="围绕这篇文献提问，或上传图片/文件给模型看（Ctrl+Enter 发送）"></textarea>
+        <div class="chat-input-row">
+          <button type="button" id="btnAttach" class="ghost" title="上传图片 / 文件（最多 4 个）：模型可看图，工具产图可下载">📎</button>
+          <input type="file" id="chatFile" accept="image/*,.pdf,.txt,.md" multiple hidden />
+          <button type="button" id="btnStop" class="ghost" disabled>停止</button>
+          <button type="button" id="btnSend" class="primary">发送</button>
+        </div>
+      </div>
+      <div class="hint" id="chatHint">回答只依据检索到的原文/译文段落；没有引用时会在回答下标注「未引用原文段落」。</div>
+    </aside>
+
+    <!-- Markdown 渲染三件套（UMD，零构建，挂在 window 上供 chat.js 使用）：
+         同步 script 先于 module 执行，模块里可直接读 window.marked / DOMPurify / hljs -->
+    <script src="assets/vendor/md/marked.min.js"></script>
+    <script src="assets/vendor/md/purify.min.js"></script>
+    <script src="assets/vendor/md/highlight.min.js"></script>
+    <script type="module" src="assets/reader.js"></script>
+  </body>
+</html>

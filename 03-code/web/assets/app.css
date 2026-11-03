@@ -1,0 +1,437 @@
+/*
+ * 视觉基线：沿用静态版《Agent 工作流文献清单.html》的设计语言
+ *   暖纸质底（#f7f6f2）+ 衬线标题/编号（Georgia / 宋体）+ 发丝级分隔线（1px dashed #e2e0d8）
+ *   + 深青强调色（#1f5f5b）+ 毛玻璃吸顶工具条 + 尽量少用卡片边框
+ * 只换观感，不换结构：所有既有 class 名保持原样，功能代码无需改动。
+ */
+
+:root {
+  /* 主色板（与静态清单一致） */
+  --bg: #f7f6f2;
+  --panel: #fff;
+  --ink: #1c1c1a;
+  --ink2: #4a4a45;
+  --ink3: #66665e;
+  --line: #e2e0d8;
+  --accent: #1f5f5b;
+  --accent-soft: #e6efee;
+  --accent-row: rgba(238, 236, 228, .55);
+
+  /* 语义色（保留原语义，配色调暖） */
+  --ok: #1a7f37;
+  --warn: #8a6d00;
+  --err: #9c2b2b;
+  --run: #0b62a4;
+  --idle: #8a8f98;
+
+  --radius: 7px;
+  --topbar-h: 50px;
+  --serif: Georgia, "Songti SC", "SimSun", serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+
+  /* 旧变量名兼容：既有规则里还在用 */
+  --border: var(--line);
+  --text: var(--ink);
+  --muted: var(--ink3);
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ── 顶栏 ───────────────────────────────────────────── */
+header.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 24px;
+  height: var(--topbar-h);
+  background: rgba(247, 246, 242, .92);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+header.topbar .brand {
+  font-family: var(--serif);
+  font-size: 16.5px;
+  font-weight: 700;
+  letter-spacing: .01em;
+  color: var(--ink);
+}
+header.topbar .hint { font-size: 12px; color: var(--ink3); }
+header.topbar nav { display: flex; gap: 14px; margin-left: auto; font-size: 13px; }
+header.topbar nav a { color: var(--ink2); }
+header.topbar nav a:hover { color: var(--accent); }
+header.topbar nav a.active { color: var(--accent); font-weight: 600; }
+
+/* ── 主布局：无卡片边框，内容直接落在纸上 ──────────────── */
+.layout {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: 0 0 60px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  aside.sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); max-height: 38vh; }
+}
+
+/* 左侧专题导航（原静态页 aside 的做法：发丝右边线，不是卡片） */
+aside.sidebar {
+  position: sticky;
+  top: var(--topbar-h);
+  align-self: start;
+  height: calc(100vh - var(--topbar-h));
+  overflow-y: auto;
+  padding: 26px 18px 40px;
+  border-right: 1px solid var(--line);
+}
+aside.sidebar > h2 {
+  margin: 0 0 12px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  color: var(--ink3);
+}
+.section-list { display: flex; flex-direction: column; gap: 1px; }
+.section-item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  text-align: left;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--ink2);
+  cursor: pointer;
+}
+.section-item:hover { background: #eeece4; color: var(--accent); }
+.section-item.active { background: var(--accent); color: #fff; font-weight: 600; }
+.section-item .count { margin-left: auto; color: var(--ink3); font-size: 11px; font-weight: 400; }
+.section-item.active .count { color: #cfe0de; }
+
+/* 只作用于总览/详情/设置三页；阅读器页的 <main class="reader-main"> 不应受影响 */
+.layout > main { min-width: 0; padding: 24px 40px 90px; }
+.sheet { min-width: 0; }
+
+/* ── 大标题区（照搬静态页 header.top）───────────────────── */
+header.hero {
+  padding: 24px 0 22px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 22px;
+}
+header.hero h1 {
+  font-family: var(--serif);
+  font-size: 31px;
+  line-height: 1.3;
+  margin: 0 0 10px;
+}
+header.hero .lead {
+  color: var(--ink2);
+  font-size: 14px;
+  max-width: 78ch;
+  margin: 0;
+}
+.stats { display: flex; flex-wrap: wrap; gap: 26px; margin-top: 22px; }
+.stat b {
+  display: block;
+  font-size: 23px;
+  font-family: var(--serif);
+  line-height: 1.1;
+  font-weight: 400;
+}
+.stat span { font-size: 11.5px; color: var(--ink3); letter-spacing: .06em; }
+
+/* ── 工具条：毛玻璃吸顶（静态页 .toolbar 的做法）─────────── */
+.toolbar {
+  position: sticky;
+  top: var(--topbar-h);
+  z-index: 9;
+  background: rgba(247, 246, 242, .95);
+  backdrop-filter: blur(8px);
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0;
+}
+.toolbar input[type="search"],
+.toolbar input[type="number"],
+.toolbar select,
+.field input,
+.field select,
+.field textarea {
+  padding: 9px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  font-family: inherit;
+  font-size: 13.5px;
+  color: inherit;
+  outline: none;
+}
+.toolbar select, .toolbar input[type="number"] { padding: 8px 10px; font-size: 13px; color: var(--ink2); }
+.toolbar input[type="search"] { flex: 1; min-width: 220px; }
+.toolbar input[type="search"]:focus,
+.toolbar select:focus,
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(31, 95, 91, .08);
+}
+
+/* ── 按钮 ───────────────────────────────────────────── */
+button, .btn {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+button:hover, .btn:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+button.primary, .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover, .btn.primary:hover { filter: brightness(1.08); color: #fff; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button:disabled:hover { border-color: var(--line); color: var(--ink2); }
+button.small, .btn.small { padding: 3px 9px; font-size: 12px; }
+
+/* ── 文献列表（表格结构，静态页的行式观感）────────────────── */
+table.works { width: 100%; border-collapse: collapse; background: transparent; }
+table.works th, table.works td {
+  padding: 12px 10px;
+  border-bottom: 1px dashed var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+table.works th {
+  padding: 9px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  color: var(--ink3);
+  border-bottom: 1px solid var(--ink);
+  background: var(--bg);
+}
+table.works tr:hover td { background: var(--accent-row); }
+td.no {
+  font-family: var(--serif);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink3);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+td.title { max-width: 560px; }
+td.title .t { font-weight: 600; font-size: 14.5px; color: var(--ink); }
+td.title .meta { color: var(--ink2); font-size: 12.5px; margin-top: 2px; }
+table.works td:nth-child(3) { font-family: var(--serif); color: var(--ink2); font-size: 12.5px; }
+
+/* 列表操作：主操作（下载）保留实心强调；其余降为安静的无边框文字按钮，减少每行视觉重量 */
+table.works td .row .btn:not(.primary):not(.is-disabled) {
+  border-color: transparent;
+  background: transparent;
+  color: var(--accent);
+  padding-left: 8px;
+  padding-right: 8px;
+}
+table.works td .row .btn:not(.primary):not(.is-disabled):hover {
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+/* ── 徽章 ───────────────────────────────────────────── */
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  border: 1px solid var(--line);
+  background: #fff;
+  white-space: nowrap;
+}
+.badge-ok { color: var(--ok); background: #eaf4ed; border-color: #cfe6d7; }
+.badge-wait { color: var(--ink2); background: #f2f1ec; border-color: var(--line); }
+.badge-run { color: var(--run); background: #e9f1f8; border-color: #c7ddf0; }
+.badge-err { color: var(--err); background: #fbefee; border-color: #eed2ce; }
+.badge-warn { color: var(--warn); background: #fbf4e4; border-color: #e9ddbc; }
+.badge-idle { color: var(--idle); background: #f4f4f1; border-color: var(--line); }
+
+/* 文献类型徽章：降级为统一的安静描边标签（类型只是次要元数据，不再用 5 种色相制造噪音） */
+.badge-type { font-size: 10.5px; padding: 0 7px; vertical-align: 1px; color: var(--ink2); background: #f2f1ec; border-color: var(--line); }
+
+/* ── 详情页 / 设置页仍然用卡片，只是调性跟上 ──────────────── */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+}
+.panel h2 {
+  margin: 0 0 12px;
+  padding-bottom: 8px;
+  font-family: var(--serif);
+  font-size: 15.5px;
+  font-weight: 700;
+  color: var(--ink);
+  border-bottom: 1px solid var(--line);
+}
+
+.pager { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 14px; color: var(--ink3); }
+
+.kv { display: grid; grid-template-columns: 92px 1fr; gap: 6px 12px; margin: 0; }
+.kv dt { color: var(--ink3); font-size: 13px; }
+.kv dd { margin: 0; word-break: break-word; color: var(--ink2); }
+
+.field { display: grid; grid-template-columns: 92px 1fr; gap: 8px; align-items: center; margin-bottom: 8px; }
+.field label { color: var(--ink3); font-size: 13px; }
+.field textarea { min-height: 70px; width: 100%; }
+.hint { color: var(--ink3); font-size: 12px; }
+.lock { color: var(--warn); font-size: 12px; margin-left: 6px; }
+
+.toast-box { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 100; }
+.toast {
+  padding: 9px 14px 9px 16px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 13px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--idle);
+  box-shadow: 0 6px 18px rgba(28, 28, 26, .12);
+  transition: opacity .3s, transform .3s;
+}
+.toast-err { border-left-color: var(--err); }
+.toast-ok { border-left-color: var(--accent); }
+.toast-warn { border-left-color: var(--warn); }
+.toast-out { opacity: 0; transform: translateY(6px); }
+
+.empty { padding: 40px; text-align: center; color: var(--ink3); }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.spacer { flex: 1; }
+.mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px; }
+
+/* 字段锁定标记（详情页）：文字徽章 + tooltip，不用 emoji */
+.lock-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--warn);
+  background: #fbf4e4;
+  border: 1px solid #e9ddbc;
+  border-radius: 999px;
+  cursor: help;
+  vertical-align: 1px;
+}
+
+/* 置灰不可用（有意为之：让用户看得见「有这个动作，但当前不可用」，而不是按钮凭空消失） */
+.btn.is-disabled, .is-disabled.btn {
+  background: #f4f3ef;
+  border-color: var(--line);
+  color: #a8a49b;
+  cursor: not-allowed;
+  pointer-events: auto;
+}
+.btn.is-disabled:hover {
+  background: #f4f3ef;
+  border-color: var(--line);
+  color: #a8a49b;
+}
+
+/* ── 键盘可见焦点（仅键盘用户，避免鼠标点击出现蓝框）────────── */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+.toolbar input:focus-visible,
+.toolbar select:focus-visible,
+.field input:focus-visible,
+.field select:focus-visible,
+.field textarea:focus-visible { outline-offset: -2px; }
+
+/* ── 工具条次级行：把「打开下一篇 / 脚本说明」从筛选器里分出来 ── */
+.toolbar-secondary {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  width: 100%;
+  padding-top: 10px;
+  margin-top: 2px;
+  border-top: 1px dashed var(--line);
+}
+
+/* 尊重 reduced-motion：关闭非必要动画 */
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .001ms !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
+}
+
+/* ── 批量采集说明卡（点击工具栏「批量采集」展开）────────────── */
+.sheet-note {
+  margin: 14px 0 0;
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  font-size: 13px;
+  color: var(--ink2);
+}
+.sheet-note h3 {
+  margin: 0 0 8px;
+  font-family: var(--serif);
+  font-size: 15px;
+  color: var(--ink);
+}
+.sheet-note ol { margin: 8px 0 0; padding-left: 20px; }
+.sheet-note li { margin: 4px 0; }
+.sheet-note b { color: var(--accent); font-variant-numeric: tabular-nums; }
+
+/* ── 阅读器选择器弹窗（顶栏「阅读器」入口）──────────────────── */
+.modal { position: fixed; inset: 0; background: rgba(28,28,26,.32); display: flex; align-items: flex-start; justify-content: center; z-index: 60; padding-top: 12vh; }
+.modal[hidden] { display: none; }
+.modal-card { width: min(560px, 92vw); max-height: 72vh; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 14px 40px rgba(28,28,26,.22); display: flex; flex-direction: column; overflow: hidden; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.modal-head h3 { margin: 0; font-family: var(--serif); font-size: 15.5px; }
+.modal-card input[type="search"] { margin: 12px 16px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius); font: inherit; font-size: 13.5px; }
+.modal-list { overflow: auto; padding: 0 8px 12px; }
+.picker-row { display: flex; gap: 10px; align-items: baseline; width: 100%; text-align: left; background: none; border: 0; border-radius: 6px; padding: 8px 10px; cursor: pointer; font-family: inherit; }
+.picker-row:hover { background: var(--accent-soft); }
+.picker-row .no { font-family: var(--serif); color: var(--ink3); font-size: 12.5px; white-space: nowrap; }
+.picker-row .t { font-size: 13.5px; color: var(--ink); }
+/* 「继续阅读」置顶：最近一次打开过的文献，作为默认入口 */
+.picker-row.pinned { background: var(--accent-soft); border: 1px solid var(--accent); margin: 4px 8px 8px; padding: 11px 12px; }
+.picker-row.pinned:hover { background: var(--accent-soft); }
+.picker-row.pinned .no { color: var(--accent); font-weight: 600; }
+.picker-row.pinned .t { color: var(--ink); font-weight: 600; }

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>条目详情 · Agent 工作流文献管理系统</title>
+    <link rel="stylesheet" href="assets/app.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <span class="brand">Agent 工作流文献管理系统</span>
+      <span class="hint" id="crumb">加载中…</span>
+      <nav>
+        <a href="index.html">总览</a>
+        <a href="settings.html">设置</a>
+      </nav>
+    </header>
+
+    <div class="layout" style="grid-template-columns: 1fr">
+      <main>
+        <div class="panel" id="headPanel">
+          <h2>元数据</h2>
+          <dl class="kv" id="metaKv"></dl>
+        </div>
+
+        <div class="panel" id="notePanel" style="margin-top: 16px">
+          <h2>贡献定位</h2>
+          <div id="noteBody" class="hint" style="color: var(--text); font-size: 13px"></div>
+        </div>
+
+        <div class="panel" style="margin-top: 16px">
+          <h2>本地 PDF</h2>
+          <div class="row" style="margin-bottom: 8px">
+            <span class="badge" id="fileBadge">—</span>
+            <span class="hint" id="fileInfo"></span>
+            <span class="spacer"></span>
+            <button id="btnDownload" class="primary">下载</button>
+            <button id="btnForce">重新下载</button>
+            <a class="btn" id="btnOpen" href="#" target="_blank" rel="noreferrer" hidden>打开 PDF（浏览器内置阅读器）</a>
+            <button id="btnReveal" hidden>在文件夹中显示</button>
+            <label class="btn" for="fileInput" style="display: inline-block">手动上传 PDF</label>
+            <input id="fileInput" type="file" accept="application/pdf" hidden />
+            <a class="btn" id="btnDoi" href="#" target="_blank" rel="noreferrer" hidden>进入网页（原文页面）</a>
+          </div>
+          <div class="hint" id="jobLine"></div>
+          <div class="hint" id="manualHints" hidden></div>
+        </div>
+
+        <div class="panel" style="margin-top: 16px">
+          <h2>编辑元数据（改过的字段会自动锁定，重导入不会覆盖）</h2>
+          <div id="editForm"></div>
+          <div class="row" style="margin-top: 10px">
+            <button id="btnSave" class="primary">保存修改</button>
+            <button id="btnReset">放弃修改</button>
+            <span class="hint" id="lockHint"></span>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top: 16px">
+          <h2>翻译与问答（M2 / M3）</h2>
+          <div class="row" style="margin-bottom: 8px">
+            <a class="btn primary" id="btnReader" href="#">打开阅读器（PDF + 译文对照）</a>
+          </div>
+          <div class="hint">
+            M2 已交付：pdf.js 阅读器（原文可选中）+ 按段落抽取 + 全文双语翻译（按段缓存，二次打开命中不重复计费）+ 点译文回跳原文高亮 + 双语 Markdown 导出。
+            围绕文献的问答在 M3 交付，下方面板为占位。
+          </div>
+          <div class="row" style="margin-top: 8px">
+            <button disabled>全文翻译（M2）</button>
+            <button disabled>继续翻译（M2）</button>
+            <button disabled>开始对话（M3）</button>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script type="module" src="assets/work.js"></script>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+# 运行时数据（DB / 密钥 / 日志）
+data/
+# 下载与收件箱
+storage/pdfs/
+storage/inbox/
+storage/tmp/
+# 本机覆盖配置
+*.local.json
+!config.local.json
+# 依赖
+node_modules/
+# 日志
+*.log
+# 系统垃圾
+Thumbs.db
+.DS_Store

@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>阅读器优化预览 · Agent 工作流文献管理系统</title>
+    <link rel="stylesheet" href="assets/app.css" />
+    <link rel="stylesheet" href="assets/reader.css" />
+    <style>
+      /* 仅预览用的占位：模拟 PDF 页面与译文，不依赖后端 */
+      .page-wrap.mock { width: 420px; height: 560px; background: #fff; }
+      .page-wrap.mock .ph { padding: 28px; color: #b9b6ad; font-family: var(--serif); }
+      .page-wrap.mock .ph b { color: #2b2b28; }
+      .preview-note { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 60; background: #144c49; color: #fff; font-size: 12px; padding: 5px 12px; border-radius: 999px; box-shadow: 0 4px 14px rgba(0,0,0,.2); }
+      .dst-para .dst { white-space: normal; }
+    </style>
+  </head>
+  <body class="reader-body">
+    <div class="preview-note">静态预览 · 直接套用真实 reader.css（无后端，PDF 为占位图）</div>
+
+    <header class="topbar">
+      <nav class="crumbs" aria-label="位置">
+        <a href="#">总览</a><span class="sep">/</span>
+        <a href="#">文献详情</a><span class="sep">/</span>
+        <span class="cur">阅读</span>
+      </nav>
+      <span class="brand">2403.12345 · Agentic Workflows for Literature Review</span>
+      <span class="hint">Zhang et al. · arXiv · 2024</span>
+      <nav class="topnav"><a href="#">总览</a><a href="#">设置</a></nav>
+    </header>
+
+    <div class="reader-toolbar">
+      <select><option>deepseek（已配置）</option></select>
+      <select><option>简体中文</option></select>
+      <button class="primary">全文翻译</button>
+      <button>继续翻译</button>
+      <span class="sep"></span>
+      <div class="seg" role="group" aria-label="显示模式">
+        <label class="seg-item"><input type="radio" name="mode" checked /><span>对照</span></label>
+        <label class="seg-item"><input type="radio" name="mode" /><span>仅译文</span></label>
+      </div>
+      <span class="spacer"></span>
+      <span class="hint">段落 12 · 已译 9</span>
+      <a class="btn" href="#">导出双语 Markdown</a>
+      <a class="btn" href="#">在新标签打开 PDF</a>
+    </div>
+
+    <main class="reader-main" id="main">
+      <section class="pdf-pane" id="pdfPane">
+        <div id="pages">
+          <div class="page-wrap mock" data-page="1"><div class="ph"><b>Agentic Workflows for Literature Review</b><br><br>Abstract — We propose a multi-agent system that ... (mock PDF page 1)</div></div>
+          <div class="page-wrap mock" data-page="2"><div class="ph"><b>1. Introduction</b><br><br>Recent advances in LLM agents have ... (mock PDF page 2)</div></div>
+        </div>
+      </section>
+      <div class="pane-splitter" id="paneSplitter" role="separator" aria-orientation="vertical" tabindex="0" title="拖动调节左右宽度"></div>
+      <aside class="dst-pane" id="dstPane">
+        <div class="dst-head">
+          <span class="dst-title">译文</span>
+          <div class="dst-font" role="group" aria-label="字号调节">
+            <button type="button" class="icon-btn" id="fontDown" title="缩小字号">A−</button>
+            <span class="font-val" id="fontVal">100%</span>
+            <button type="button" class="icon-btn" id="fontReset" title="恢复默认字号">A</button>
+            <button type="button" class="icon-btn" id="fontUp" title="放大字号">A+</button>
+          </div>
+        </div>
+        <div class="dst-toolbar">
+          <input type="search" id="dstSearch" class="dst-search" placeholder="搜索译文 / 原文…" aria-label="搜索译文" />
+          <button type="button" class="icon-btn" id="dstLocate" title="跳到 PDF 当前页对应的译文">定位本页</button>
+        </div>
+        <div class="hint" id="dstHint">点段落可跳回原文高亮</div>
+        <div id="dstList">
+          <div class="dst-page">
+            <div class="dst-page-title">第 1 页</div>
+            <div class="dst-para"><div class="src">We propose a multi-agent system that automates literature review.</div><div class="dst">我们提出了一种多智能体系统，可自动化完成文献综述。</div></div>
+            <div class="dst-para"><div class="src">Our method reduces manual effort by 70% on average.</div><div class="dst">该方法平均可减少 70% 的人工工作量。</div></div>
+          </div>
+          <div class="dst-page">
+            <div class="dst-page-title">第 2 页</div>
+            <div class="dst-para"><div class="src">Recent advances in LLM agents have enabled complex reasoning.</div><div class="dst">大语言模型智能体的最新进展已能支持复杂推理。</div></div>
+            <div class="dst-para"><div class="src">We evaluate on three benchmark datasets of scientific papers.</div><div class="dst">我们在三个科学论文基准数据集上进行了评估。</div></div>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <div class="pdf-hud" id="pdfHud" aria-label="PDF 阅读控制">
+      <div class="pdf-nav">
+        <button type="button" class="icon-btn" id="pdfPrev" title="上一页">‹</button>
+        <span id="pdfPageLabel">1 / 2</span>
+        <button type="button" class="icon-btn" id="pdfNext" title="下一页">›</button>
+      </div>
+      <div class="pdf-zoom">
+        <button type="button" class="icon-btn" id="zoomOut" title="缩小 PDF">−</button>
+        <span id="zoomVal">135%</span>
+        <button type="button" class="icon-btn" id="zoomIn" title="放大 PDF">＋</button>
+      </div>
+    </div>
+
+    <button class="chat-toggle" id="chatToggle" aria-expanded="false" title="展开 / 收起 对话 Agent">对话</button>
+    <aside class="chat-drawer" id="chatDrawer" aria-hidden="true">
+      <div class="chat-head">
+        <span class="chat-title">对话 Agent</span>
+        <button type="button" class="chat-close" id="chatClose" aria-label="收起对话">×</button>
+      </div>
+      <div class="chat-toolbar">
+        <select id="chatSelect"><option>（新会话）</option></select>
+        <button type="button" id="btnNewChat" class="icon-btn" title="新建会话">＋</button>
+        <button type="button" id="btnAskSelection" class="icon-btn" title="针对选中段落提问">⤷</button>
+      </div>
+      <div id="chatMsgs" class="chat-msgs">
+        <div class="msg user"><div class="who">我</div><div class="bubble">这篇论文的核心贡献是什么？</div></div>
+        <div class="msg assistant"><div class="who">助手 · deepseek</div><div class="bubble">本文的核心贡献有三点：① 提出了一个自动化文献综述的多智能体框架；② 相比人工流程平均节省 70% 工作量；③ 在三个科学论文基准上验证有效。</div><div class="msg-actions"><button type="button">复制</button></div><div class="cites"><span class="chip" title="quote">p1#1</span><span class="chip" title="quote">p2#3</span></div></div>
+        <div class="msg assistant"><div class="who">助手 · deepseek</div><div class="bubble">（示例）本回答未引用原文段落（可能在文献中没有依据）</div><div class="msg-actions"><button type="button">复制</button></div><div class="no-cite">本回答未引用原文段落（可能在文献中没有依据）</div></div>
+      </div>
+      <div class="chat-quick" id="chatQuick" aria-label="快捷提问">
+        <button type="button" data-q="请用 3 条要点总结这篇文献的核心贡献与创新点。">总结核心贡献</button>
+        <button type="button" data-q="本文用了什么研究方法 / 模型 / 实验设置？">研究方法</button>
+        <button type="button" data-q="本文的局限与未来工作方向是什么？">局限与展望</button>
+        <button type="button" data-q="请解释我选中的这段话，并说明它在全文中的作用。">解释选段</button>
+      </div>
+      <div class="chat-input">
+        <textarea id="chatText" rows="2" placeholder="围绕这篇文献提问（Ctrl+Enter 发送）"></textarea>
+        <div class="chat-input-row">
+          <button type="button" id="btnStop" class="ghost" disabled>停止</button>
+          <button type="button" id="btnSend" class="primary">发送</button>
+        </div>
+      </div>
+      <div class="hint" id="chatHint">回答只依据检索到的原文/译文段落；没有引用时会在回答下标注「未引用原文段落」。</div>
+    </aside>
+
+    <script>
+      // ===== 预览交互（仅演示，逻辑等价于真实 reader.js / chat.js 的增强部分）=====
+      const $ = (id) => document.getElementById(id);
+
+      // 面板拖拽
+      (() => {
+        const splitter = $('paneSplitter'), main = $('main');
+        const setFrac = (f) => { f = Math.min(0.8, Math.max(0.2, f)); main.style.setProperty('--pdf-frac', (f*100).toFixed(1)+'%'); };
+        splitter.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          const move = (ev) => { const r = main.getBoundingClientRect(); setFrac((ev.clientX - r.left)/r.width); };
+          const up = () => { document.body.classList.remove('col-resizing'); window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+          document.body.classList.add('col-resizing');
+          window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+        });
+        splitter.addEventListener('keydown', (e) => {
+          const cur = parseFloat(getComputedStyle(main).getPropertyValue('--pdf-frac'))/100 || 0.6;
+          if (e.key === 'ArrowLeft') { setFrac(cur-0.03); e.preventDefault(); }
+          if (e.key === 'ArrowRight') { setFrac(cur+0.03); e.preventDefault(); }
+        });
+      })();
+
+      // 译文 / PDF 缩放演示
+      (() => {
+        const dst = $('dstPane'); let fs = 1;
+        const applyFont = () => { dst.style.setProperty('--dst-scale', fs); $('fontVal').textContent = Math.round(fs*100)+'%'; };
+        $('fontUp').onclick = () => { fs = Math.min(1.3, +(fs+0.1).toFixed(2)); applyFont(); };
+        $('fontDown').onclick = () => { fs = Math.max(0.85, +(fs-0.1).toFixed(2)); applyFont(); };
+        $('fontReset').onclick = () => { fs = 1; applyFont(); };
+        let z = 1.35;
+        const applyZoom = () => { $('zoomVal').textContent = Math.round(z*100)+'%'; };
+        $('zoomIn').onclick = () => { z = Math.min(3, +(z+0.15).toFixed(2)); applyZoom(); };
+        $('zoomOut').onclick = () => { z = Math.max(0.5, +(z-0.15).toFixed(2)); applyZoom(); };
+        let pg = 1; const total = 2;
+        const updPg = () => { $('pdfPageLabel').textContent = `${pg} / ${total}`; $('pdfPrev').disabled = pg<=1; $('pdfNext').disabled = pg>=total; };
+        $('pdfNext').onclick = () => { pg = Math.min(total, pg+1); updPg(); };
+        $('pdfPrev').onclick = () => { pg = Math.max(1, pg-1); updPg(); };
+        updPg();
+      })();
+
+      // 译文搜索 + 定位本页
+      (() => {
+        const inp = $('dstSearch');
+        inp.addEventListener('input', () => {
+          const q = inp.value.trim().toLowerCase();
+          let first = null;
+          document.querySelectorAll('#dstList .dst-para').forEach((p) => {
+            const hit = !q || (p.textContent||'').toLowerCase().includes(q);
+            p.classList.toggle('dim', !hit);
+            if (hit && !first) first = p;
+          });
+          if (first && q) first.scrollIntoView({ block: 'center' });
+        });
+        $('dstLocate').onclick = () => {
+          const pages = [...document.querySelectorAll('#dstList .dst-page-title')];
+          const t = pages.find((e) => e.textContent.includes(`第 ${1} 页`));
+          if (t) t.scrollIntoView({ block: 'start' });
+        };
+      })();
+
+      // 对话抽屉开关 + 复制 + 快捷提问 + 发送演示
+      (() => {
+        const toggle = () => {
+          const open = document.body.classList.toggle('chat-open');
+          $('chatToggle').setAttribute('aria-expanded', String(open));
+          $('chatDrawer').setAttribute('aria-hidden', String(!open));
+        };
+        $('chatToggle').onclick = toggle;
+        $('chatClose').onclick = () => { document.body.classList.remove('chat-open'); $('chatToggle').setAttribute('aria-expanded','false'); $('chatDrawer').setAttribute('aria-hidden','true'); };
+
+        document.querySelectorAll('#chatMsgs .msg-actions button').forEach((b) => {
+          b.onclick = () => alert('已复制（预览中仅演示）');
+        });
+
+        $('chatQuick').querySelectorAll('button').forEach((b) => {
+          b.onclick = () => { $('chatText').value = b.dataset.q; $('chatText').focus(); };
+        });
+
+        $('btnSend').onclick = () => {
+          const text = $('chatText').value.trim(); if (!text) return;
+          $('chatText').value = '';
+          const msgs = $('chatMsgs');
+          const u = document.createElement('div'); u.className = 'msg user'; u.innerHTML = `<div class="who">我</div><div class="bubble">${text.replace(/</g,'&lt;')}</div>`; msgs.append(u);
+          const a = document.createElement('div'); a.className = 'msg assistant'; a.innerHTML = `<div class="who">助手 · deepseek</div><div class="bubble"><span class="typing"><i></i><i></i><i></i></span></div>`; msgs.append(a);
+          msgs.scrollTop = msgs.scrollHeight;
+          setTimeout(() => {
+            a.querySelector('.bubble').textContent = '（演示）这是基于检索片段生成的示例回答。点击「复制」可复制，引用 chip 可跳回原文高亮。';
+            const acts = document.createElement('div'); acts.className = 'msg-actions'; acts.innerHTML = '<button type="button">复制</button>';
+            a.append(acts); acts.querySelector('button').onclick = () => alert('已复制（预览中仅演示）');
+          }, 900);
+        };
+      })();
+    </script>
+  </body>
+</html>

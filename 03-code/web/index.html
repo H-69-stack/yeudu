@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>总览 · Agent 工作流文献管理系统</title>
+    <link rel="stylesheet" href="assets/app.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <span class="brand">Agent 工作流文献管理系统</span>
+      <span class="hint" id="statLine">加载中…</span>
+      <nav>
+        <a href="index.html" class="active">总览</a>
+        <a href="settings.html">设置</a>
+        <a href="#" id="navReader">阅读器</a>
+      </nav>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <h2>专题 · <span id="sectionCount">—</span> 个</h2>
+        <div class="section-list" id="sections"></div>
+      </aside>
+
+      <main>
+        <header class="hero">
+          <h1>Agent 工作流文献清单</h1>
+          <p class="lead">
+            聚焦 agent 工作流（agentic workflow）方向：工作流思想源流与流程编排、多智能体协作、工作流自动生成与优化，
+            推理 / 工具 / 检索 / 软件工程 / 计算机使用 / 具身等各子方向工作流、训练与评测、协议与基础设施，直至 2026 年前沿。
+            arXiv 条目由系统自动下载；仅有 DOI、需机构订阅的条目走浏览器直传。
+          </p>
+          <div class="stats">
+            <div class="stat"><b id="statTotal">—</b><span>文献条目</span></div>
+            <div class="stat"><b id="statSections">—</b><span>专题</span></div>
+            <div class="stat"><b id="statPdf">—</b><span>本地 PDF</span></div>
+            <div class="stat"><b id="statManual">—</b><span>需人工采集</span></div>
+            <div class="stat"><b id="statSeg">—</b><span>已抽取段落</span></div>
+          </div>
+        </header>
+
+        <div class="sheet">
+          <div class="toolbar">
+            <input type="search" id="q" placeholder="搜索标题 / 作者 / 出处 / 编号 / arXiv / DOI（即时）" />
+            <select id="type">
+              <option value="">全部类型</option>
+              <option>期刊</option>
+              <option>会议</option>
+              <option>专著</option>
+              <option>预印本</option>
+              <option>非同行评审</option>
+            </select>
+            <select id="pdfFilter">
+              <option value="">全部状态</option>
+              <option value="1">仅已下载</option>
+              <option value="0">仅未下载</option>
+            </select>
+            <select id="sort">
+              <option value="no">按编号</option>
+              <option value="year">按年份</option>
+              <option value="title">按标题</option>
+              <option value="updated">按更新时间</option>
+            </select>
+            <div class="toolbar-secondary">
+              <button id="btnNextPending" title="新标签打开下一条待采集文献的原文页；装了直传脚本时，脚本会在你打开的那一页自动直传">打开下一篇待采集</button>
+              <span class="hint" id="scriptStatus">检测直传脚本…</span>
+              <button id="btnUploaderNote" title="查看直传脚本的安装与用法说明">脚本说明</button>
+            </div>
+            <span class="spacer"></span>
+            <span class="hint" id="totalLine"></span>
+          </div>
+
+          <div class="sheet-note" id="batchNote" hidden></div>
+
+          <table class="works">
+            <thead>
+              <tr>
+                <th style="width:64px">编号</th>
+                <th>标题 / 作者</th>
+                <th style="width:64px">年份</th>
+                <th style="width:88px">类型</th>
+                <th style="width:190px">专题</th>
+                <th style="width:120px">本地 PDF</th>
+                <th style="width:150px">操作</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+          <div class="empty" id="empty" hidden>没有匹配的条目</div>
+
+          <div class="pager">
+            <span id="pageInfo" class="hint"></span>
+            <button id="prev" class="small">上一页</button>
+            <button id="next" class="small">下一页</button>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div class="modal" id="readerPicker" hidden>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3>选择要阅读的文献</h3>
+          <button class="small" id="readerPickerClose" type="button">关闭</button>
+        </div>
+        <input type="search" id="readerPickerQ" placeholder="筛选编号 / 标题…" />
+        <div class="modal-list" id="readerPickerList"></div>
+      </div>
+    </div>
+
+    <script type="module" src="assets/list.js"></script>
+  </body>
+</html>

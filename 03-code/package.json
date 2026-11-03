@@ -1,0 +1,21 @@
+{
+  "name": "agent-workflow-literature-system",
+  "version": "1.0.0-m1",
+  "private": true,
+  "type": "module",
+  "description": "Agent 工作流文献管理系统 · 本地 Web 服务（M1：总览 / 详情 / 下载 / 本地打开 PDF）",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node --no-warnings server/index.js",
+    "import": "node --no-warnings server/import-cli.js",
+    "import:dry": "node --no-warnings server/import-cli.js --dry-run",
+    "test": "node --no-warnings --test \"server/test/*.test.js\"",
+    "fts:rebuild": "node --no-warnings server/cli/fts-rebuild.js"
+  },
+  "dependencies": {
+    "express": "^4.22.3",
+    "pdfjs-dist": "^6.4.299"
+  }
+}

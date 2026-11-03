@@ -1,3 +1,0 @@
-# yeudu
-
-temporary bootstrap

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>设置 · Agent 工作流文献管理系统</title>
+    <link rel="stylesheet" href="assets/app.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <span class="brand">Agent 工作流文献管理系统</span>
+      <span class="hint" id="healthLine">加载中…</span>
+      <nav>
+        <a href="index.html">总览</a>
+        <a href="settings.html" class="active">设置</a>
+      </nav>
+    </header>
+
+    <div class="layout" style="grid-template-columns: 1fr">
+      <main>
+        <div class="panel">
+          <h2>服务</h2>
+          <dl class="kv" id="serverKv"></dl>
+          <div class="hint" style="margin-top: 8px">
+            仅监听 127.0.0.1（硬编码，不提供配置项）；端口与数据库路径改动后需重启进程。
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top: 16px">
+          <h2>下载目录</h2>
+          <div class="field">
+            <label for="downloadDir">当前目录</label>
+            <div class="row">
+              <input id="downloadDir" type="text" style="min-width: 520px" />
+              <button id="btnSaveDir" class="primary">保存（switch）</button>
+              <button id="btnResync">重扫并自愈</button>
+            </div>
+          </div>
+          <div class="hint">
+            切换目录只改配置、不移动文件（M1 未实现迁移）。切换后原目录里的 PDF 会显示「文件丢失」，把文件移到新目录后点「重扫并自愈」即可恢复。
+          </div>
+          <pre class="mono" id="resyncReport" hidden></pre>
+        </div>
+
+        <div class="panel" style="margin-top: 16px">
+          <h2>引擎分工（翻译 / AI 精排）</h2>
+          <div class="field">
+            <label for="translateEngine">翻译引擎（正文翻译）</label>
+            <select id="translateEngine">
+              <option value="qwen">通义千问（qwen，便宜量大）</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="openai">OpenAI</option>
+              <option value="gemini">Gemini</option>
+              <option value="claude">Claude</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="refineEngine">AI 精排引擎（版面复核）</label>
+            <select id="refineEngine">
+              <option value="deepseek">DeepSeek</option>
+              <option value="qwen">通义千问（qwen）</option>
+              <option value="openai">OpenAI</option>
+              <option value="gemini">Gemini</option>
+              <option value="claude">Claude</option>
+              <option value="">跟随翻译引擎</option>
+            </select>
+          </div>
+          <div class="row">
+            <button id="btnSaveEngines" class="primary">保存分工</button>
+            <span class="hint">翻译走便宜的引擎跑量，精排走判断更稳的引擎复核标题/公式/页眉页脚等角色。精排引擎未配密钥时会自动回退到翻译引擎。</span>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top: 16px">
+          <h2>LLM 供应商（翻译引擎）</h2>
+          <div class="field">
+            <label for="provider">provider</label>
+            <div class="row">
+              <select id="providerPreset" style="max-width: 140px">
+                <option value="">— 预设 —</option>
+                <option value="qwen">qwen（千问）</option>
+                <option value="deepseek">deepseek</option>
+                <option value="openai">openai</option>
+              </select>
+              <input id="provider" type="text" value="deepseek" />
+            </div>
+          </div>
+          <div class="field">
+            <label for="baseUrl">baseUrl</label>
+            <input id="baseUrl" type="text" placeholder="deepseek: https://api.deepseek.com/v1 · qwen: https://dashscope.aliyuncs.com/compatible-mode/v1" />
+          </div>
+          <div class="field">
+            <label for="model">model</label>
+            <div class="row">
+              <input id="model" type="text" placeholder="deepseek-chat" />
+              <button id="btnSaveModel" class="small">保存模型</button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="apiKey">apiKey</label>
+            <div class="row">
+              <input id="apiKey" type="password" placeholder="未配置（保存后仅显示掩码）" />
+              <span class="hint" id="keyState">—</span>
+            </div>
+          </div>
+          <div class="row">
+            <button id="btnSaveSecret">保存密钥</button>
+            <button id="btnTest">测试连通性（真实请求）</button>
+            <span class="hint">密钥写入 data/secret.json，永不出现在前端与日志里；「测试连通性」会真的发一次极短请求（会花很少量的 token）。</span>
+          </div>
+          <pre class="mono" id="testResult" hidden></pre>
+        </div>
+
+        <div class="panel" style="margin-top: 16px">
+          <h2>导入（CSV → works）</h2>
+          <div class="row">
+            <button id="btnDryRun">dry-run（只看 diff）</button>
+            <button id="btnMerge">merge（写盘）</button>
+            <span class="hint">字段级锁：你在详情页改过的字段不会被覆盖，导入报告里的「锁定跳过」会列出来。</span>
+          </div>
+          <pre class="mono" id="importReport" hidden></pre>
+        </div>
+
+        <div class="panel" style="margin-top: 16px">
+          <h2>统计</h2>
+          <dl class="kv" id="statsKv"></dl>
+        </div>
+      </main>
+    </div>
+
+    <script type="module" src="assets/settings.js"></script>
+  </body>
+</html>

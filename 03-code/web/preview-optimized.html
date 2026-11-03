@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>优化预览 · Agent 工作流文献管理系统</title>
+    <link rel="stylesheet" href="assets/app.css" />
+    <style>
+      /* 仅演示用途的脚手架，不进入正式样式 */
+      .demo-flag { background: var(--accent-soft); color: var(--accent); border: 1px solid #bcd4d1; padding: 8px 14px; border-radius: 7px; font-size: 12.5px; margin: 0 40px 18px; }
+      .demo-flag b { font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <span class="brand">Agent 工作流文献管理系统</span>
+      <span class="hint">共 312 条 · 已下载 268 · 需人工 44 · 活跃任务 0</span>
+      <nav>
+        <a href="#" class="active">总览</a>
+        <a href="#">设置</a>
+      </nav>
+    </header>
+
+    <div class="demo-flag">
+      <b>优化预览（外观层，未改动 JS）</b>：① 类型徽章统一为安静描边标签，去掉 5 色噪音；② 状态色与全站青色一致；③ Hero 黑实线降级为发丝线；④ 行间次按钮幽灵化、仅「下载」实心；⑤ Toast 改为纸面 + 彩色左边框；⑥ 新增键盘焦点环；⑦ 移动端侧栏改为可滚动顶块。
+    </div>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <h2>专题 · <span>14</span> 个</h2>
+        <div class="section-list">
+          <button class="section-item active">全部专题 <span class="count">312</span></button>
+          <button class="section-item">01 工作流思想源流与流程编排 <span class="count">41</span></button>
+          <button class="section-item">02 多智能体协作 <span class="count">58</span></button>
+          <button class="section-item">03 工作流自动生成与优化 <span class="count">37</span></button>
+          <button class="section-item">04 推理 / 工具 / 检索工作流 <span class="count">66</span></button>
+          <button class="section-item">05 软件工程工作流 <span class="count">49</span></button>
+          <button class="section-item">06 计算机使用 / 具身 <span class="count">28</span></button>
+          <button class="section-item">07 训练与评测 <span class="count">21</span></button>
+          <button class="section-item">08 协议与基础设施 <span class="count">12</span></button>
+        </div>
+      </aside>
+
+      <main>
+        <header class="hero">
+          <h1>Agent 工作流文献清单</h1>
+          <p class="lead">
+            聚焦 agent 工作流（agentic workflow）方向：工作流思想源流与流程编排、多智能体协作、工作流自动生成与优化，
+            推理 / 工具 / 检索 / 软件工程 / 计算机使用 / 具身等各子方向工作流、训练与评测、协议与基础设施，直至 2026 年前沿。
+          </p>
+          <div class="stats">
+            <div class="stat"><b>312</b><span>文献条目</span></div>
+            <div class="stat"><b>14</b><span>专题</span></div>
+            <div class="stat"><b>268</b><span>本地 PDF</span></div>
+            <div class="stat"><b>44</b><span>需人工采集</span></div>
+            <div class="stat"><b>1893</b><span>已抽取段落</span></div>
+          </div>
+        </header>
+
+        <div class="sheet">
+          <div class="toolbar">
+            <input type="search" placeholder="搜索标题 / 作者 / 出处 / 编号 / arXiv / DOI（即时）" />
+            <select><option>全部类型</option><option>期刊</option><option>会议</option><option>专著</option><option>预印本</option><option>非同行评审</option></select>
+            <select><option>全部状态</option><option>仅已下载</option><option>仅未下载</option></select>
+            <select><option>按编号</option><option>按年份</option><option>按标题</option><option>按更新时间</option></select>
+            <div class="toolbar-secondary">
+              <button>打开下一篇待采集</button>
+              <span class="hint">未安装直传脚本（点「脚本说明」看如何安装）</span>
+              <button>脚本说明</button>
+            </div>
+            <span class="spacer"></span>
+            <span class="hint">共 312 条</span>
+          </div>
+
+          <table class="works">
+            <thead>
+              <tr>
+                <th style="width:64px">编号</th>
+                <th>标题 / 作者</th>
+                <th style="width:64px">年份</th>
+                <th style="width:88px">类型</th>
+                <th style="width:190px">专题</th>
+                <th style="width:120px">本地 PDF</th>
+                <th style="width:150px">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="no">A-014</td>
+                <td class="title"><div class="t">AutoGen: Enabling Next-Gen LLM Applications via Multi-Agent Conversation</div><div class="meta">Qingyun Wu · Microsoft Research · arXiv:2308.08155</div></td>
+                <td>2023</td>
+                <td><span class="badge badge-type">预印本</span></td>
+                <td class="hint">02 多智能体协作</td>
+                <td><span class="badge badge-ok">已下载</span></td>
+                <td><div class="row"><a class="btn small" href="#">详情</a><a class="btn small" href="#">打开 PDF</a><a class="btn small" href="#">进入网页</a><button class="small primary">重新下载</button></div></td>
+              </tr>
+              <tr>
+                <td class="no">A-031</td>
+                <td class="title"><div class="t">React: Synergizing Reasoning and Acting in Language Models</div><div class="meta">Shunyu Yao · Princeton · ICLR 2023</div></td>
+                <td>2023</td>
+                <td><span class="badge badge-type">会议</span></td>
+                <td class="hint">04 推理 / 工具 / 检索工作流</td>
+                <td><span class="badge badge-ok">已下载</span></td>
+                <td><div class="row"><a class="btn small" href="#">详情</a><a class="btn small" href="#">打开 PDF</a><a class="btn small" href="#">进入网页</a><button class="small primary">重新下载</button></div></td>
+              </tr>
+              <tr>
+                <td class="no">A-047</td>
+                <td class="title"><div class="t">Toolformer: Language Models Can Teach Themselves to Use Tools</div><div class="meta">Timo Schick · Meta AI · NeurIPS 2023</div></td>
+                <td>2023</td>
+                <td><span class="badge badge-type">会议</span></td>
+                <td class="hint">04 推理 / 工具 / 检索工作流</td>
+                <td><span class="badge badge-idle">未下载</span></td>
+                <td><div class="row"><a class="btn small" href="#">详情</a><a class="btn small is-disabled" href="#">打开 PDF</a><a class="btn small" href="#">进入网页</a><button class="small primary">下载</button></div></td>
+              </tr>
+              <tr>
+                <td class="no">A-058</td>
+                <td class="title"><div class="t">Agent Workflow Patterns for Software Engineering Automation</div><div class="meta">L. Chen et al. · 期刊 IEEE TSE</div></td>
+                <td>2025</td>
+                <td><span class="badge badge-type">期刊</span></td>
+                <td class="hint">05 软件工程工作流</td>
+                <td><span class="badge badge-warn">需人工</span></td>
+                <td><div class="row"><a class="btn small" href="#">详情</a><a class="btn small is-disabled" href="#">打开 PDF</a><a class="btn small" href="#">进入网页</a><button class="small primary">下载</button></div></td>
+              </tr>
+              <tr>
+                <td class="no">A-066</td>
+                <td class="title"><div class="t">OSWorld: Benchmarking Multimodal Agents for Open-Ended Tasks</div><div class="meta">Tianbao Xie · HKU · arXiv:2404.07972</div></td>
+                <td>2024</td>
+                <td><span class="badge badge-type">预印本</span></td>
+                <td class="hint">06 计算机使用 / 具身</td>
+                <td><span class="badge badge-run">下载中 62%</span></td>
+                <td><div class="row"><a class="btn small" href="#">详情</a><a class="btn small is-disabled" href="#">打开 PDF</a><a class="btn small" href="#">进入网页</a><button class="small primary">重新下载</button></div></td>
+              </tr>
+              <tr>
+                <td class="no">A-072</td>
+                <td class="title"><div class="t">A Survey on LLM-based Autonomous Agents</div><div class="meta">Lei Wang · 非同行评审 · arXiv:2308.11432</div></td>
+                <td>2023</td>
+                <td><span class="badge badge-type">非同行评审</span></td>
+                <td class="hint">01 工作流思想源流</td>
+                <td><span class="badge badge-err">文件丢失</span></td>
+                <td><div class="row"><a class="btn small" href="#">详情</a><a class="btn small is-disabled" href="#">打开 PDF</a><a class="btn small" href="#">进入网页</a><button class="small primary">下载</button></div></td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="pager">
+            <span class="hint">第 1 / 7 页 · 共 312 条</span>
+            <button class="small" disabled>上一页</button>
+            <button class="small">下一页</button>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- 演示：纸面化 Toast -->
+    <div class="toast-box">
+      <div class="toast toast-ok">A-066 已加入下载队列</div>
+      <div class="toast toast-warn">A-058 没有可自动下载的开放源，已标记「需人工」</div>
+    </div>
+  </body>
+</html>

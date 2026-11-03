@@ -1,0 +1,72 @@
+{
+  "server": {
+    "port": 7317,
+    "logLevel": "info"
+  },
+  "download": {
+    "downloadDir": "storage/pdfs",
+    "maxBytes": 125829120,
+    "timeoutMs": 45000,
+    "concurrency": 2,
+    "maxRedirects": 5,
+    "unpaywallEmail": ""
+  },
+  "translate": {
+    "engine": "deepseek",
+    "fallbackEngines": [
+      "openai"
+    ],
+    "tgtLang": "zh-CN",
+    "srcLang": "auto",
+    "concurrency": 2,
+    "batchChars": 3000,
+    "batchItems": 6,
+    "temperature": 0.3,
+    "maxTokens": 4000
+  },
+  "chat": {
+    "provider": "deepseek",
+    "model": "deepseek-chat",
+    "maxTokens": 1600,
+    "temperature": 0.3,
+    "timeoutMs": 90000,
+    "historyTurns": 4,
+    "retrieveTopK": 24,
+    "retrieveChars": 3600,
+    "selectionChars": 1600,
+    "minKeywordHitRatio": 0.3,
+    "engine": "tools",
+    "tools": [
+      "lit_search",
+      "lit_read",
+      "lit_translation"
+    ],
+    "maxToolCallsPerTurn": 8,
+    "maxToolRounds": 5
+  },
+  "budget": {
+    "dailyTokens": 800000,
+    "jobTokens": 300000
+  },
+  "extract": {
+    "paragraphChars": 600,
+    "useLayout": true,
+    "lineGapRatio": 1.5,
+    "columnRules": {
+      "minGapPct": 1.0,
+      "balance": [
+        0.3,
+        0.7
+      ],
+      "minLinesPerSide": 3,
+      "minSideShare": 0.35
+    },
+    "roleRules": {
+      "mathNonAlnumRatio": 0.45,
+      "mathMinSymbols": 2,
+      "mathDigitRatio": 0.1,
+      "labelMaxChars": 40,
+      "headingMaxChars": 90
+    }
+  }
+}

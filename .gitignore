@@ -1,0 +1,27 @@
+# 本仓库只纳入这四个目录（其余为工具链、依赖缓存、旧备份，不进版本库）
+/*
+!/.gitignore
+!/02-design/
+!/03-code/
+!/04-test/
+!/05-review/
+
+# ---- 运行时数据与密钥：永不入库 ----
+03-code/data/
+03-code/storage/
+03-code/.tmp/
+03-code/*.log
+03-code/**/*.db
+03-code/**/*.db-wal
+03-code/**/*.db-shm
+03-code/**/*.bak
+03-code/data/secret.json
+03-code/node_modules/
+
+# ---- 报告/临时产物 ----
+05-review/*.tmp
+*.zip
+
+# 测试探针留下的浏览器临时目录
+/04-test/.tmp/
+/04-test/logs/
