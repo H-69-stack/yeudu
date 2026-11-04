@@ -42,6 +42,43 @@ const REFERENCE_RE =
   /\b(Eds?\.|Cambridge, ?MA|New York, ?NY|M\.I\.T\.|MIT Press|Springer|Prentice|Academic Press|IEEE Trans|Proc\.|Tech\. Rep|Ph\.?D\.? thesis|pp\.\s*\d|vol\.\s*\d|"[,]?\s*in\b)/i;
 
 
+/**
+ * 图注/表注的形态判据（S7 与段落合并护栏共用，唯一事实源）。
+ *
+ * 两种写法算图注：
+ *  ① 编号后带分隔符或直接跟全大写：`Fig. 1.`、`Fig.1:`、`TABLE II`、`Table 2 Performance`、`表 2：`；
+ *  ② 只有编号（短标题，如 `Fig. 3`）。
+ * 反例（**不算**图注）：`Figure 1 shows that …`、`Table 2 lists …` —— 编号后跟小写动词，
+ * 这是正文里的引用句。
+ */
+const CAPTION_MARK = /^(?:fig(?:ure)?|tab(?:le)?|图|表)\s*[.．:：-]?\s*(?:[IVXLC]{1,6}|\d{1,3})(?![0-9])/iu;
+// 注意：这里**不能**加 `i` —— 加了之后 `\s+\p{Lu}` 会连小写词也匹配，
+// `Figure 1 shows …` 这种正文引用句就会被误判成图注。前缀的两种大小写手写进字符类。
+const CAPTION_STRONG =
+  /^(?:[Ff]ig(?:ure)?|[Tt]ab(?:le)?|图|表)\s*[.．:：-]?\s*(?:[IVXLC]{1,6}|\d{1,3})\s*(?:[.．:：|–—-]|\s+\p{Lu})/u;
+
+/** 图注长度上限（角色判定与「图注不许吞正文」护栏共用同一个值） */
+export const CAPTION_MAX_CHARS = 300;
+
+/**
+ * 文本是否像图注/表注。
+ * @param {string} text
+ * @param {{maxChars?:number}} [opts]
+ * @returns {boolean}
+ */
+export function isCaptionText(text, opts = {}) {
+  const t = String(text || '').trim();
+  if (!t || t.length > (opts.maxChars ?? CAPTION_MAX_CHARS)) return false;
+  if (CAPTION_STRONG.test(t)) return true;
+  if (!CAPTION_MARK.test(t)) return false;
+  const rest = t.replace(CAPTION_MARK, '').trim();
+  // 只剩编号：`Fig. 3` / `TABLE II`
+  if (!rest) return true;
+  // 编号后面必须重新「起头」：大写、数字、括号/引号或 CJK。
+  // 小写开头的是正文引用句（`Figure 1 shows …`），交还给 body。
+  return /^[\p{Lu}\p{Lt}\d(（[「『“"'\u4e00-\u9fff]/u.test(rest) && rest.length <= 120;
+}
+
 /** 数学习惯符号集（判定 is_math 用） */
 const MATH_SYMBOLS = ['=', '+', '−', '-', '×', '÷', '∑', '∫', '√', '≤', '≥', '∈', '∂', '≈', '±', '∞', '→', '⊗', '∇', 'θ', 'λ', 'α', 'β', 'σ'];
 
@@ -438,6 +475,8 @@ export function mergeParagraphs(orderedLines, opts = {}) {
     const leading = st.leading || Math.max(prev.fontSize, line.fontSize) * 1.3;
     // 短尾行：这一行没有排到栏右边界，通常意味着段落在本行结束
     const shortTail = Number.isFinite(st.colRight) && prev.x1 < st.colRight - 2.2 * prev.fontSize;
+    // 上一行是否已经收句。中文/英文的句末标点都算；行尾的右引号/右括号一并吸收。
+    const prevTerminated = /[.!?。！？:;：；]["'”’）)\]】』」]?$/.test(prevText);
     // 首行缩进：只有「相对栏左边界」缩进才算新段（用 cur 的首行 x0 会漏判）
     const indented = Number.isFinite(st.marginLeft) && line.x0 - st.marginLeft > line.fontSize * 0.9;
     // 大字号行（多行标题/大标题）的行距本来就不按正文 leading 走：
@@ -446,18 +485,33 @@ export function mergeParagraphs(orderedLines, opts = {}) {
     const isDisplay = line.fontSize >= 1.15 * (bodyFont || st.medianFont || 0) && prev.fontSize >= 1.15 * (bodyFont || st.medianFont || 0);
     const gapLimit = isDisplay ? Math.max(leading * gapRatio, line.fontSize * 1.9) : leading * gapRatio;
     const prevHeading = looksHeading(prevText, prev);
+    // 反向护栏（与下面 `!/^(图|表|Figure|Fig\.?|Table)\s*\d/` 那句配对）：
+    // 旧代码只挡「正文吞掉紧随其后的图注」，挡不住「图注吞掉后面的正文」——
+    // 只要段落以 `Fig. 1.` 开头，后文正文就被继续并进来（asset 5 p1 #7 的根因）。
+    // 规则：段首行是图注时，只允许并入图注自身的续行，且整段不得超过 CAPTION_MAX_CHARS。
+    if (cur.captionLike === undefined) cur.captionLike = isCaptionText(prevText);
+    const curChars = cur.lines.reduce((s, l) => s + l.text.length + 1, 0);
+    const captionStop =
+      cur.captionLike && curChars + nextText.length + 1 > CAPTION_MAX_CHARS && !isCaptionText(nextText);
+    // 上一行没收句 ⇒ 这段还没完：跨插图/跨栏底时行距会明显变大，仍应并入同一段。
+    // 收句的行仍用严格 gapLimit，避免把两段正文粘在一起。
+    const effectiveGapLimit = prevTerminated ? gapLimit : gapLimit * 2.6;
     const ok =
       gap > 0 &&
-      gap <= gapLimit &&
+      gap <= effectiveGapLimit &&
       // 字号一致性：绝对 1.5pt 对正文够用，但大字号标题的同一行常因字形差异差 2~3pt，
       // 再用绝对值会把标题切两半；对大于 12pt 的行改用 8% 相对容差。
       Math.abs(prev.fontSize - line.fontSize) <= Math.max(1.5, 0.08 * Math.max(prev.fontSize, line.fontSize)) &&
       // 居中标题的续行天然"缩进"，但对 display 行来说这是排版常态，不是新段落
       (!indented || isDisplay) &&
       !prevHeading &&
+      !captionStop &&
       !(shortTail && /[.!?。！？:;]$/.test(prevText)) &&
       !/^(\d+(\.\d+)*|[•·*\-–—]|\(?\d+\))\s+/.test(nextText) &&
-      !/^(图|表|Figure|Fig\.?|Table)\s*\d/i.test(nextText) &&
+      // 图注边界：只有当上一行**已经收句**时，"Fig. 3 …" 才是新段（真图注）。
+      // 上一行没收句说明它是折行，"…as shown in Fig. 1. After analyzing…" 是同一段，
+      // 在此处断开会把句子切成两半（asset 5 p1 #6/#7、p8 #5/#6 就是这种）。
+      !(isCaptionText(nextText) && prevTerminated) &&
       !/^[A-Z][A-Za-z]+:\s/.test(nextText);
     if (ok) cur.lines.push(line);
     else {
@@ -537,6 +591,37 @@ export function classifyRole(text, rules = {}) {
 }
 
 /**
+ * 段块与图区的关系（用于把「图内短标注」与「图注」和正文分开）。
+ * @param {{x0:number,y0?:number,y1?:number,yBottom:number,x1:number,yTop:number}} block
+ * @param {number[][]} boxes 图区（PDF 点、y 向上）
+ * @returns {'inside'|'near'|'outside'}
+ */
+function boxRelation(block, boxes) {
+  const b = [block.x0, block.yBottom, block.x1, block.yTop];
+  const bArea = Math.max(1, (b[2] - b[0]) * (b[3] - b[1]));
+  let near = false;
+  for (const f of boxes) {
+    if (!Array.isArray(f) || f.length !== 4) continue;
+    const ix = Math.min(f[2], b[2]) - Math.max(f[0], b[0]);
+    const iy = Math.min(f[3], b[3]) - Math.max(f[1], b[1]);
+    if (ix > 0 && iy > 0) {
+      // 中心落在图框内、或 60% 以上面积落在图框内 → 图内标注
+      if (ix * iy >= 0.6 * bArea) return 'inside';
+      const cx = (b[0] + b[2]) / 2;
+      const cy = (b[1] + b[3]) / 2;
+      if (cx > f[0] && cx < f[2] && cy > f[1] && cy < f[3]) return 'inside';
+      near = true;
+      continue;
+    }
+    // 相距 ≤24pt 且水平投影重叠 ≥30% → 紧邻图区（图注/图题）
+    const vgap = Math.max(f[1] - b[3], b[1] - f[3]);
+    const minW = Math.max(1, Math.min(f[2] - f[0], b[2] - b[0]));
+    if (vgap <= 24 && ix > 0.3 * minW) near = true;
+  }
+  return near ? 'near' : 'outside';
+}
+
+/**
  * 富角色判定（S7 增强）：在 classifyRole 基础上，结合字号比、居中、文本模式，
  * 产出 Zotero「AI 精排」同构的 { role, tier, align, ratio }，供前端按层级排版。
  * 纯确定性规则（不调模型），作为「没有精排」时的基线；精排会覆盖这里的判断。
@@ -544,9 +629,11 @@ export function classifyRole(text, rules = {}) {
  * @param {{text:string, fontSize:number, x0:number, x1:number, yTop:number, yBottom:number}} block
  * @param {number} bodyFont 该页正文基准字号（块字号中位数）
  * @param {number} pageWidth 页宽（同 block 坐标系）
- * @returns {{isMath:boolean, isLabel:boolean, isHeading:boolean, role:string, tier:string, align:string, ratio:number}}
+ * @param {Object} [rules]
+ * @param {{figureBoxes?:number[][], alignInherit?:string}} [ctx] 图区（PDF 点、y 向上）；alignInherit 供重算时沿用原对齐
+ * @returns {{isMath:boolean,isLabel:boolean,isHeading:boolean,isCaption:boolean,role:string,tier:string,align:string,ratio:number}}
  */
-export function classifyRich(block, bodyFont, pageWidth, rules = {}) {
+export function classifyRich(block, bodyFont, pageWidth, rules = {}, ctx = {}) {
   const base = classifyRole(block.text, rules);
   const ratio = bodyFont > 0 ? Math.min(3, Math.max(0.5, block.fontSize / bodyFont)) : 1;
   const width = Math.max(0, block.x1 - block.x0);
@@ -561,7 +648,25 @@ export function classifyRich(block, bodyFont, pageWidth, rules = {}) {
   // 第二行 "For A Mobile Robot"（4 个词、无句末标点）也被当成图注，永远显示「未翻译」。
   // 真正的图内标注还有两个伴生特征：字号偏小，或文本以 Fig./Table 开头。
   const captionLike = /^(fig|figure|table|tab|eq|equation|algorithm|图|表)\s*[.．]?\s*\d/i.test(t);
-  const isLabel = base.isLabel && (ratio <= 0.92 || captionLike);
+  // 图区关系：有图区信息时用它来收紧/放宽图内标注的判定（见下方 isLabel）。
+  const figs = Array.isArray(ctx.figureBoxes) && ctx.figureBoxes.length ? ctx.figureBoxes : null;
+  const figRel = figs ? boxRelation(block, figs) : null;
+  // 图注：① 形态判据（Fig./Table/图/表 + 编号）；② 紧邻图区的短段（≤300 字符）。
+  const isCaption =
+    !base.isMath &&
+    (isCaptionText(t) || (figRel === 'near' && t.length < CAPTION_MAX_CHARS && !base.isHeading));
+  // 图内标注 = 不送翻译。旧版只按字号比判，于是：
+  //  - 图里用正文字号写的短标注被判成正文（译文里混入图内词）；
+  //  - 图外的短正文碎片（"2.3" 之类）又被判成标注而永久不译。
+  // 有图区时按「是否落在图框内」决定：图内放宽到 ratio ≤ 1.05，图外收紧到 ≤ 0.82。
+  const isLabel =
+    !isCaption &&
+    base.isLabel &&
+    (figRel === 'inside'
+      ? ratio <= 1.05
+      : figRel === 'outside'
+        ? ratio <= 0.82 || captionLike
+        : ratio <= 0.92 || captionLike);
   let role = 'body';
   let tier = 'body';
   let align = 'left';
@@ -570,6 +675,11 @@ export function classifyRich(block, bodyFont, pageWidth, rules = {}) {
     role = 'equation';
     tier = 'body';
     align = 'center';
+  } else if (isCaption) {
+    // 图注/表注：小字号档，单独一段，不再和正文混排（此前被归进 body/footnote）
+    role = 'caption';
+    tier = 'small';
+    align = ctx.alignInherit || (cent ? 'center' : 'left');
   } else if (isLabel) {
     role = 'figure-label';
     tier = 'small';
@@ -615,7 +725,7 @@ export function classifyRich(block, bodyFont, pageWidth, rules = {}) {
     }
   }
 
-  return { isMath: base.isMath, isLabel, isHeading: base.isHeading, role, tier, align, ratio };
+  return { isMath: base.isMath, isLabel, isHeading: base.isHeading, isCaption, role, tier, align, ratio };
 }
 
 /**
@@ -778,6 +888,133 @@ export function estimateBodyFont(pagesWithLines) {
 }
 
 /**
+ * 取某一页的图区（opts.pageFigures 支持 Map / 数组 / 普通对象三种形状）。
+ * @param {Map<number,number[][]>|Array<{pageNo:number,boxes:number[][]}>|Object} [src]
+ * @param {number} pageNo
+ * @returns {number[][]|null}
+ */
+function pickFigures(src, pageNo) {
+  if (!src) return null;
+  if (src instanceof Map) return src.get(pageNo) || null;
+  if (Array.isArray(src)) {
+    const hit = src.find((x) => x && Number(x.pageNo) === Number(pageNo));
+    return hit ? hit.boxes || null : null;
+  }
+  if (typeof src === 'object') return src[pageNo] || null;
+  return null;
+}
+
+/**
+ * 把一个块的 bbox 切成 k 个**互不相同**的子段 bbox（交付①的核心规则）。
+ *
+ * 判定规则（确定性、可复现，重算脚本用同一套）：
+ *  1. `splitParagraphs` 只在文本超过 paragraphChars（600）时才把一块拆成多段，
+ *     所以「同一块拆出来的 k 段」天然按阅读顺序排列：第一段在块**顶部**，最后一段在底部。
+ *  2. 块级 y 跨度（yBottom..yTop）按各段**字符数占比**分段；x 范围沿用块级
+ *     x0..x1（拆段只发生在行与行之间，横向不会缩进）。字符数用 `Math.max(1, len)`
+ *     兜底，保证不会出现零高度框。
+ *  3. 累积取整误差全部落到最后一段（`y0 = 块底`），因此各段首尾相接、总和等于原块高。
+ *  4. 若块高极小（<1pt）则退化为横向均分，避免所有段仍共用一个 y。
+ *
+ * 这样每段拿到的是「自己那几行文本所在的行带」，而不是整块的行带 ——
+ * 前端按 bbox 贴译文时不再互相叠字。
+ * @param {{x0:number,x1:number,yTop:number,yBottom:number}} block
+ * @param {string[]} pieces
+ * @returns {number[][]} 与 pieces 等长的 bbox 数组
+ */
+export function splitBlockBBox(block, pieces) {
+  const n = Array.isArray(pieces) ? pieces.length : 0;
+  const x0 = round(block.x0);
+  const x1 = round(block.x1);
+  if (n <= 1) return [[x0, round(block.yBottom), x1, round(block.yTop)]];
+  const totalChars = pieces.reduce((s, t) => s + Math.max(1, String(t || '').length), 0);
+  const top = block.yTop;
+  const bottom = block.yBottom;
+  const span = top - bottom;
+  if (!(span > 1)) {
+    // 极端情况：块没有垂直跨度（多段挤在同一基线）→ 横向等分，保证 bbox 互不相同
+    const step = (x1 - x0) / n;
+    return pieces.map((_, i) => [round(x0 + i * step), round(bottom), round(x0 + (i + 1) * step), round(top)]);
+  }
+  const out = [];
+  let cursor = top;
+  for (let i = 0; i < n; i += 1) {
+    const chars = Math.max(1, String(pieces[i] || '').length);
+    const h = i === n - 1 ? cursor - bottom : (span * chars) / totalChars;
+    const y1 = cursor;
+    const y0 = Math.max(bottom, cursor - h);
+    out.push([x0, round(y0), x1, round(y1)]);
+    cursor = y0;
+  }
+  return out;
+}
+
+/**
+ * 同 bbox 去重兜底（跨块重复时 splitBlockBBox 管不到）。
+ *
+ * 规则：第 k 次（k≥1）出现完全相同的 bbox 时，把这一段的 y 上沿下移 0.5k pt、
+ * 下沿上移 0.5k pt（等价于在原区域内**向内收缩**），保证几何上仍落在原文本行带里；
+ * 收缩到高度 <1pt 后改为横向内缩 0.4k pt。收缩量只与本段是第几次重复有关，
+ * 与输入顺序绑定 —— 同样的输入永远得到同样的 bbox（extract_version 依赖确定性）。
+ * @param {Array<{bbox:number[]}>} paras
+ * @returns {number} 被修正的段数
+ */
+export function dedupeBBoxes(paras) {
+  const seen = new Map();
+  let fixed = 0;
+  for (const p of paras) {
+    if (!Array.isArray(p.bbox) || p.bbox.length !== 4) continue;
+    const key = p.bbox.join(',');
+    const k = seen.get(key) || 0;
+    seen.set(key, k + 1);
+    if (k === 0) continue;
+    const [x0, y0, x1, y1] = p.bbox;
+    const pad = 0.5 * k;
+    let ny0 = Math.min(y1 - 1, y0 + pad);
+    let ny1 = Math.max(ny0 + 1, y1 - pad);
+    let nx0 = x0;
+    let nx1 = x1;
+    if (ny1 - ny0 < 1) {
+      ny0 = y0;
+      ny1 = y1;
+      nx0 = Math.min(nx1 - 1, x0 + 0.4 * k);
+      nx1 = Math.max(nx0 + 1, x1 - 0.4 * k);
+    }
+    p.bbox = [round(nx0), round(ny0), round(nx1), round(ny1)];
+    fixed += 1;
+  }
+  return fixed;
+}
+
+/**
+ * 页面位置修正（从 buildPagesFromRaw 里抽出来的，重算脚本 `recompute-layout.js` 复用同一套）。
+ *
+ * 页眉（running head）在 IEEE 双栏页上常是该行唯一的大字号文本，`classifyRich` 会把它判成
+ * section；但正文首行也贴页面顶沿，所以只有「版式特征（RUNNING_HEAD_RE）」或
+ * 「通栏全大写 + 短行」才纠正成 header。就地修改 rich，返回同一对象。
+ *
+ * @param {Object} rich classifyRich 的返回值
+ * @param {{yTop:number}} block
+ * @param {{height:number}} page 该页（raw 页对象，height=getViewport 可视高）
+ * @param {string} text 该段文本（已清洗）
+ */
+export function adjustRoleForPage(rich, block, page, text) {
+  const height = Number(page && page.height) || 0;
+  if (!(height > 0)) return rich;
+  const atTop = block.yTop >= height * 0.93;
+  if (!atTop) return rich;
+  const headLetters = String(text).replace(/[^A-Za-z]/g, '');
+  const capsHead =
+    headLetters.length >= 12 && headLetters.replace(/[^A-Z]/g, '').length / headLetters.length >= 0.8;
+  const headLike = String(text).length <= 120 && (RUNNING_HEAD_RE.test(text) || capsHead);
+  if (rich.role === 'section' || (rich.role === 'body' && headLike)) {
+    rich.role = 'header';
+    rich.tier = 'small';
+  }
+  return rich;
+}
+
+/**
  * 衔接点唯一入口（§16.2）：输入 RawPage[]，输出 ExtractPage[]。
  * @param {Array<{pageNo:number,width:number,height:number,items:Array}>} rawPages
  * @param {{paragraphChars?:number, roleRules?:Object, lineGapRatio?:number, columnRules?:Object}} [opts]
@@ -848,6 +1085,7 @@ export function buildPagesFromRaw(rawPages, opts = {}) {
     // 译文与段落就不再一一对应（表现为相邻两段译文互相吞并、内容重复）。
     // 因此在分类之前先把「未结束 + 小写开头」的相邻块拼回去。
     const joined = joinContinuations(blocks, bodyFont);
+    const figures = pickFigures(opts.pageFigures, raw.pageNo);
     const paras = [];
     let prevBottom = null; // 上一块底边 y（同一页，用于算 gap_pct）
     for (const b of joined) {
@@ -858,20 +1096,15 @@ export function buildPagesFromRaw(rawPages, opts = {}) {
       // 于是拿到 `Layers of` + `control` → `ofcontrol` 这种词。段落成形后整段再扫一遍，
       // 用同一份文档词表把粘连切开（幂等：已正确的词没有连续 5 字母长串，直接原样返回）。
       if (opts.spaceVocab) cleaned = restoreSpaces(cleaned, opts.spaceVocab);
-      const rich = classifyRich(b, bodyFont, raw.width, opts.roleRules);
+      const rich = classifyRich(b, bodyFont, raw.width, opts.roleRules, {
+        figureBoxes: figures,
+        pageHeight: raw.height,
+      });
       // 页眉（running head）：贴在页面最上沿、字号又恰好偏大的行（IEEE 双栏页的
       // "14 IEEE JOURNAL OF ROBOTICS AND AUTOMATION, …"）会被 ratio 判成 section，
       // 这里按位置纠正成 header —— 否则译文栏里会把它当成一级标题渲染。
       // 正文首行也贴页顶，所以只有「版式特征 / 通栏全大写 + 短行」才按页眉处理。
-      const atTop = raw.height > 0 && b.yTop >= raw.height * 0.93;
-      const headLetters = cleaned.replace(/[^A-Za-z]/g, '');
-      const capsHead =
-        headLetters.length >= 12 && headLetters.replace(/[^A-Z]/g, '').length / headLetters.length >= 0.8;
-      const headLike = cleaned.length <= 120 && (RUNNING_HEAD_RE.test(cleaned) || capsHead);
-      if (atTop && (rich.role === 'section' || (rich.role === 'body' && headLike))) {
-        rich.role = 'header';
-        rich.tier = 'small';
-      }
+      adjustRoleForPage(rich, b, raw, cleaned);
       // 单字符游离碎片（上标、图注里的散字母 "B"/"I"/"n"）：翻出来没有意义，
       // 还会在白送进模型的批次里占号、拉偏分批对齐。属于公式的除外。
       if (!rich.isMath && cleaned.length <= 2 && !/\d/.test(cleaned)) continue;
@@ -885,9 +1118,13 @@ export function buildPagesFromRaw(rawPages, opts = {}) {
       }
       prevBottom = b.yBottom;
       const pieces = splitParagraphs(cleaned, { maxChars: paragraphChars });
-      for (const text of pieces) {
+      // **每个子段单独算 bbox**：旧代码把块级包围盒原样复制给 k 个子段，
+      // 于是同一页出现 k 段共享完全相同的 bbox（全库 404 组 / 937 段）。
+      // 前端按 bbox 定位时这些段会叠在同一块区域上，译文只能互相压字。
+      const boxes = splitBlockBBox(b, pieces);
+      for (let i = 0; i < pieces.length; i += 1) {
         paras.push({
-          text,
+          text: pieces[i],
           isMath: rich.isMath,
           isLabel: rich.isLabel,
           isHeading: rich.isHeading,
@@ -896,10 +1133,12 @@ export function buildPagesFromRaw(rawPages, opts = {}) {
           align: rich.align,
           ratio: Math.round(rich.ratio * 1000) / 1000,
           gapPct,
-          bbox: [round(b.x0), round(b.yBottom), round(b.x1), round(b.yTop)],
+          bbox: boxes[i],
         });
       }
     }
+    // 兜底：跨块的 bbox 完全重合（两段文本来自不同块却落在同一区域）也拆开
+    dedupeBBoxes(paras);
     out.push({
       pageNo: raw.pageNo,
       width: round(raw.width),
@@ -919,4 +1158,19 @@ function round(n) {
   return Math.round(n * 100) / 100;
 }
 
-export default { buildPagesFromRaw, groupLines, detectColumns, orderLines, mergeParagraphs, joinContinuations, classifyRole, dropRepeatedMarginalia };
+export default {
+  buildPagesFromRaw,
+  groupLines,
+  detectColumns,
+  orderLines,
+  mergeParagraphs,
+  joinContinuations,
+  classifyRole,
+  classifyRich,
+  adjustRoleForPage,
+  dropRepeatedMarginalia,
+  isCaptionText,
+  splitBlockBBox,
+  dedupeBBoxes,
+  CAPTION_MAX_CHARS,
+};

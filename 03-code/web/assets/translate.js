@@ -1,95 +1,116 @@
 /**
  * 译文面板：按页渲染段落（原文 + 译文），点段落回调给阅读器做「跳页 + 高亮」。
- * 两档显示：对照（原文小字 + 译文）/ 仅译文（只显示译文，便于通读）。
+ *
+ * 两种排版（renderMode）：
+ *  - layout（默认）：版式还原页，每页一张 .page-sheet，段落按 bbox 绝对定位（见 page-layout.js）；
+ *  - flow：原来的线性段落流，作为 bbox 缺失 / 想通读时的降级与备选。
+ * 两种排版都支持「对照 / 仅译文」两档：对照 = 原文小字，仅译文 = 隐藏原文。
  *
  * 排版：每个段按 role/tier/align 加 class（来自抽取层 classifyRich 或 AI 精排），
- * 并由 reader.css 还原标题层级 / 引用 / 列表 / 段落间距；译文按 Markdown 渲染，
- * 这样模型在翻译时输出的 # 标题、- 列表、> 引用 能真正变成结构。
+ * 译文按 Markdown 渲染，这样模型在翻译时输出的 # 标题、- 列表、> 引用 能真正变成结构。
  */
-const MD_OK = Boolean(window.marked && window.DOMPurify);
+import {
+  SheetPage,
+  bboxOf,
+  classify,
+  createParaEl,
+  pageSizeOf,
+  renderDst,
+} from './page-layout.js';
 
-/** 由段属性推导 role/tier/align（兼容没有精排、只有 is_heading/is_math 的旧数据） */
-function classify(para) {
-  let role = para.role || 'body';
-  let tier = para.tier || null;
-  let align = para.align || 'left';
-  if (para.isMath && (role === 'body' || role === 'equation')) {
-    role = 'equation';
-    tier = 'body';
-    align = 'center';
+const STORE_KEY = 'agentlit.renderMode';
+
+function readSavedRenderMode() {
+  try {
+    return localStorage.getItem(STORE_KEY) === 'flow' ? 'flow' : 'layout';
+  } catch {
+    return 'layout';
   }
-  if (para.isHeading && (role === 'body' || !tier)) {
-    role = 'section';
-    tier = 'h2';
-  }
-  if (!tier) {
-    if (role === 'title') tier = 'h1';
-    else if (role === 'section') tier = 'h2';
-    else if (role === 'equation') tier = 'body';
-    else if (['footnote', 'reference', 'caption', 'figure-label', 'header', 'footer', 'page-number', 'list-item'].includes(role)) tier = 'small';
-    else tier = 'body';
-  }
-  return { role, tier, align };
 }
 
-/** 把译文渲染成 Markdown（安全：先过 DOMPurify）；公式段与图内标注保留原文本 */
-function renderDst(dstEl, para) {
-  if (para.isMath) {
-    dstEl.textContent = para.text;
-    dstEl.classList.add('empty', 'math-raw');
-    return;
+function saveRenderMode(mode) {
+  try {
+    localStorage.setItem(STORE_KEY, mode);
+  } catch {
+    /* localStorage 不可用时只影响记忆，不影响本次会话 */
   }
-  // 图内标注（"Fig.1." "Sensors → Actuators" 这类）按设计不送翻译，
-  // 早先一律写「（未翻译）」，一页里能出现十几条，看着像翻译挂了。
-  // 页眉/页脚/页码同理：它们是跨页重复的栏目信息，服务端不送翻，这里直接显示原文。
-  const untranslatedByDesign =
-    para.isLabel ||
-    para.role === 'header' ||
-    para.role === 'footer' ||
-    para.role === 'page-number';
-  if (untranslatedByDesign) {
-    // 即便库里还留着历史译文（早期版本翻过页眉，出现 `18 SEEE JOURNAL…` 这类半成品），
-    // 也一律显示原文：这类段落在服务端已经不送翻，显示旧译文只会更乱。
-    dstEl.textContent = para.text;
-    dstEl.classList.add('label-src');
-    return;
+}
+
+/** `pageFigures` 形如 {"1": [[x0,y0,x1,y1], ...]}；键转成数字页码，没有图的页不放进 Map */
+function figureMapOf(raw) {
+  const map = new Map();
+  if (!raw || typeof raw !== 'object') return map;
+  for (const [key, boxes] of Object.entries(raw)) {
+    const pageNo = Number(key);
+    if (!Number.isFinite(pageNo) || !Array.isArray(boxes) || !boxes.length) continue;
+    map.set(pageNo, boxes);
   }
-  const text = para.dst;
-  if (!text) {
-    dstEl.textContent = '（未翻译）';
-    dstEl.classList.add('empty');
-    return;
-  }
-  if (MD_OK) {
-    const raw = window.marked.parse(text, { gfm: true, breaks: false });
-    dstEl.innerHTML = window.DOMPurify.sanitize(raw, { USE_PROFILES: { html: true } });
-    dstEl.classList.add('md');
-  } else {
-    dstEl.textContent = text;
-  }
+  return map;
 }
 
 export class TranslatePanel {
   /**
    * @param {HTMLElement} listEl
-   * @param {{onSelect:(para:Object)=>void}} opts
+   * @param {{onSelect?:(para:Object)=>void,
+   *          getPageSize?:(pageNo:number)=>{width:number,height:number}|null,
+   *          renderMode?:'layout'|'flow',
+   *          renderFigure?:(pageNo:number, box:number[], canvas:HTMLCanvasElement,
+   *                         opts:{scale:number})=>Promise<boolean>}} opts
    */
-  constructor(listEl, { onSelect }) {
+  constructor(listEl, { onSelect, getPageSize, renderMode, renderFigure } = {}) {
     this.listEl = listEl;
-    this.onSelect = onSelect;
-    this.mode = 'dual';
-    this.pages = new Map(); // pageNo → {el, paras}
+    this.onSelect = onSelect || (() => {});
+    this.getPageSize = getPageSize || null;
+    this.renderFigure = renderFigure || null;
+    this.figuresByPage = new Map(); // pageNo → 图区 bbox 数组（API 的 pageFigures）
+    this.mode = 'dual'; // dual | dst
+    this.renderMode = renderMode === 'flow' || renderMode === 'layout' ? renderMode : readSavedRenderMode();
+    this.pages = new Map(); // pageNo → {el, page, sheet, paras}
+    this.rawPages = new Map(); // pageNo → 原始 page（切换排版时重建）
     this.activeId = null;
+    this._raf = 0;
+    this.listEl.classList.toggle('dst-only', this.mode === 'dst');
   }
 
+  /** 对照 / 仅译文：只切 class，不重建 DOM；版式页要重排（原文行高度变了） */
   setMode(mode) {
-    this.mode = mode;
-    const only = mode === 'dst';
+    this.mode = mode === 'dst' ? 'dst' : 'dual';
+    const only = this.mode === 'dst';
     this.listEl.classList.toggle('dst-only', only);
     for (const { el } of this.pages.values()) el.classList.toggle('dst-only', only);
-    // 这里**不能**重排 DOM：仅译文模式由 CSS 隐藏原文行即可，
+    // 这里**不能**重建 DOM：仅译文模式由 CSS 隐藏原文行即可，
     // 重建会让正在拖动的滚动位置跳回顶部（早先 setMode 调 rerender() 的副作用）。
+    this.relayoutAll();
     if (!this.pages.size) this.ensureHint();
+  }
+
+  /** 版式 / 线性排版切换：两种结构不同，只能重建；重建后尽量留在原来的页 */
+  setRenderMode(mode) {
+    if (mode !== 'layout' && mode !== 'flow') return;
+    if (mode === this.renderMode) return;
+    const scroller = this._scroller();
+    const keepTop = scroller ? scroller.scrollTop : 0;
+    const anchor = this._pickPageAnchor(scroller);
+    this.renderMode = mode;
+    saveRenderMode(mode);
+
+    const pages = [...this.rawPages.values()].sort((a, b) => a.pageNo - b.pageNo);
+    this._clear();
+    for (const page of pages) {
+      const rec = this._buildPage(page);
+      this.pages.set(page.pageNo, rec);
+      this.listEl.append(rec.el);
+    }
+    for (const rec of this.pages.values()) rec.sheet?.relayout();
+    if (scroller) {
+      const next = anchor && this.pages.get(anchor.no);
+      if (next) {
+        scroller.scrollTop += next.el.getBoundingClientRect().top - anchor.top;
+      } else {
+        scroller.scrollTop = keepTop;
+      }
+    }
+    this.ensureHint();
   }
 
   ensureHint() {
@@ -101,94 +122,205 @@ export class TranslatePanel {
     this.listEl.append(tip);
   }
 
-  /** 批量渲染（首次载入） */
-  render(pages) {
-    this.listEl.textContent = '';
-    this.pages.clear();
-    for (const p of pages) this.appendPage(p);
+  /** 批量渲染（首次载入）；opts.pageFigures = API 顶层 `pageFigures` */
+  render(pages, opts = {}) {
+    this._clear();
+    this.rawPages.clear();
+    this.figuresByPage = figureMapOf(opts.pageFigures);
+    for (const p of pages || []) this.appendPage(p, { silent: true });
     this.ensureHint();
   }
 
   /** 单页追加/替换（SSE event: page 用） */
-  appendPage(page) {
-    const scroller = this.listEl.closest('.dst-pane');
+  appendPage(page, opts = {}) {
+    const scroller = this._scroller();
     const keepTop = scroller ? scroller.scrollTop : 0;
+    const anchor = this._pickAnchor(scroller);
+
     const prev = this.pages.get(page.pageNo);
-    if (prev) prev.el.remove();
-    const el = document.createElement('div');
-    el.className = 'dst-page';
-    if (this.mode === 'dst') el.classList.add('dst-only');
-    const title = document.createElement('div');
-    title.className = 'dst-page-title';
-    title.textContent = `第 ${page.pageNo} 页`;
-    el.append(title);
-    const paras = [];
-    for (const para of page.paras) {
-      const { role, tier, align } = classify(para);
-      const item = document.createElement('div');
-      item.className =
-        `dst-para role-${role} tier-${tier} align-${align}` +
-        `${para.isMath ? ' math' : ''}${para.isLabel ? ' label' : ''}`;
-      item.dataset.segmentId = String(para.segmentId);
-      const src = document.createElement('div');
-      src.className = 'src';
-      // 原文不再截断到 160 字：对照阅读时被截掉的半句反而更费解，
-      // 而且这也是「译文/原文对不上」的观感来源之一。
-      src.textContent = para.isMath ? '（公式段，不翻译）' : para.text;
-      const dst = document.createElement('div');
-      dst.className = 'dst';
-      renderDst(dst, para);
-      item.append(src, dst);
-      item.addEventListener('click', () => {
-        this.setActive(para.segmentId);
-        this.onSelect(para);
-      });
-      el.append(item);
-      paras.push({ para, el: item });
+    if (prev) {
+      if (prev.sheet) prev.sheet.destroy();
+      prev.el.remove();
+      this.pages.delete(page.pageNo);
     }
-    this.pages.set(page.pageNo, { el, paras });
-    // 就地插入（按页码升序），不整块重建 —— 边翻译边阅读时不能把滚动位置弹回顶部。
+    this.rawPages.set(page.pageNo, page);
+
+    const rec = this._buildPage(page);
+    this.pages.set(page.pageNo, rec);
+
     const hint = this.listEl.querySelector('.hint');
     if (hint) hint.remove();
-    let anchor = null;
-    for (const [no, v] of this.pages.entries()) {
-      if (no > page.pageNo && (!anchor || no < anchor.no)) anchor = { no, el: v.el };
+
+    // 就地插入（按页码升序），不整块重建 —— 边翻译边阅读时不能把滚动位置弹回顶部。
+    let before = null;
+    for (const [no, r] of this.pages) {
+      if (no > page.pageNo && (!before || no < before.no)) before = { no, el: r.el };
     }
-    if (anchor) this.listEl.insertBefore(el, anchor.el);
-    else this.listEl.append(el);
-    if (scroller) scroller.scrollTop = keepTop;
+    if (before) this.listEl.insertBefore(rec.el, before.el);
+    else this.listEl.append(rec.el);
+
+    if (rec.sheet) rec.sheet.relayout();
+    // 插在视口上方会整体下移内容：用锚点段落的屏幕位移补回滚动位置
+    if (!this._restoreAnchor(scroller, anchor) && scroller && !opts.silent) {
+      scroller.scrollTop = keepTop;
+    }
   }
 
   setActive(segmentId) {
     this.activeId = segmentId;
-    for (const { paras } of this.pages.values()) {
-      for (const p of paras) p.el.classList.toggle('active', p.para.segmentId === segmentId);
+    for (const rec of this.pages.values()) {
+      if (rec.sheet) {
+        rec.sheet.setActive(segmentId);
+        continue;
+      }
+      for (const p of rec.paras) p.el.classList.toggle('active', p.para.segmentId === segmentId);
     }
   }
 
   /** 原地刷新所有段落的译文（不重建 DOM，滚不动） */
   rerender() {
-    for (const { paras } of this.pages.values()) {
-      for (const p of paras) {
-        const dst = p.el.querySelector('.dst');
+    for (const rec of this.pages.values()) {
+      if (rec.sheet) {
+        rec.sheet.refresh();
+        continue;
+      }
+      for (const { para, el } of rec.paras) {
+        const dst = el.querySelector('.dst');
         if (!dst) continue;
         dst.className = 'dst';
         dst.textContent = '';
-        renderDst(dst, p.para);
+        dst.removeAttribute('title');
+        renderDst(dst, para);
       }
     }
+  }
+
+  /** 宽度变化 / 字号变化后重排所有版式页（保持阅读位置） */
+  relayoutAll() {
+    if (!this.pages.size) return;
+    const scroller = this._scroller();
+    const anchor = this._pickAnchor(scroller);
+    for (const rec of this.pages.values()) rec.sheet?.relayout();
+    this._restoreAnchor(scroller, anchor);
   }
 
   /** 已渲染段数 / 已译段数（进度条之外的自检口径） */
   stats() {
     let total = 0;
     let done = 0;
-    for (const { paras } of this.pages.values()) {
-      for (const p of paras) {
+    for (const page of this.rawPages.values()) {
+      for (const para of page.paras || []) {
         total += 1;
-        if (p.para.dst) done += 1;
+        if (para.dst) done += 1;
       }
     }
     return { total, done };
   }
+
+  /* ── 内部：建页 ─────────────────────────────────────────── */
+
+  _buildPage(page) {
+    const layoutable = this.renderMode === 'layout' && (page.paras || []).some((p) => bboxOf(p.bbox));
+    if (!layoutable) return this._buildLinearPage(page);
+
+    const sheet = new SheetPage(page, {
+      mode: this.mode,
+      getPageSize: () => this._pageSize(page),
+      figures: this.figuresByPage.get(Number(page.pageNo)) || [],
+      onRenderFigure: this.renderFigure,
+      onPick: (para) => {
+        this.setActive(para.segmentId);
+        this.onSelect(para);
+      },
+      onResize: () => this._scheduleRelayout(),
+    });
+    return {
+      page,
+      el: sheet.el,
+      sheet,
+      paras: sheet.items.map((it) => ({ para: it.para, el: it.el })),
+    };
+  }
+
+  _buildLinearPage(page) {
+    const el = document.createElement('div');
+    el.className = 'dst-page';
+    el.dataset.page = String(page.pageNo);
+    if (this.mode === 'dst') el.classList.add('dst-only');
+    const title = document.createElement('div');
+    title.className = 'dst-page-title';
+    title.textContent = `第 ${page.pageNo} 页`;
+    el.append(title);
+    const paras = [];
+    for (const para of page.paras || []) {
+      const rec = createParaEl(para, {
+        onPick: (p) => {
+          this.setActive(p.segmentId);
+          this.onSelect(p);
+        },
+      });
+      el.append(rec.el);
+      paras.push({ para, el: rec.el });
+    }
+    return { page, el, sheet: null, paras };
+  }
+
+  _pageSize(page) {
+    const viewerSize = this.getPageSize ? this.getPageSize(page.pageNo) : null;
+    return pageSizeOf(page, viewerSize);
+  }
+
+  _clear() {
+    for (const rec of this.pages.values()) {
+      if (rec.sheet) rec.sheet.destroy();
+      rec.el.remove();
+    }
+    this.pages.clear();
+    this.listEl.textContent = '';
+  }
+
+  _scroller() {
+    return this.listEl.closest('.dst-pane');
+  }
+
+  /** 找到视口内第一个可见段落，作为滚动锚点（页面增删/重排时保持阅读位置） */
+  _pickAnchor(scroller) {
+    if (!scroller) return null;
+    const top = scroller.getBoundingClientRect().top + 2;
+    for (const el of this.listEl.querySelectorAll('.dst-para')) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom > top) return { el, top: r.top };
+    }
+    return null;
+  }
+
+  _restoreAnchor(scroller, anchor) {
+    if (!scroller || !anchor || !anchor.el.isConnected) return false;
+    const dy = anchor.el.getBoundingClientRect().top - anchor.top;
+    if (Math.abs(dy) > 0.5) scroller.scrollTop += dy;
+    return true;
+  }
+
+  _pickPageAnchor(scroller) {
+    if (!scroller) return null;
+    const top = scroller.getBoundingClientRect().top + 2;
+    for (const [no, rec] of this.pages) {
+      const r = rec.el.getBoundingClientRect();
+      if (r.bottom > top) return { no, top: r.top };
+    }
+    return null;
+  }
+
+  _scheduleRelayout() {
+    if (this._raf) return;
+    const raf = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : (fn) => setTimeout(fn, 16);
+    this._raf = raf(() => {
+      this._raf = 0;
+      this.relayoutAll();
+    });
+  }
 }
+
+export { classify, renderDst };

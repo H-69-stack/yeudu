@@ -461,3 +461,118 @@ header.topbar .brand { max-width: 36vw; white-space: nowrap; overflow: hidden; t
   .pdf-hud { display: none; }
   .reader-toolbar { padding: 8px 12px; gap: 6px; }
 }
+
+/* ── 版式还原页：bbox → 纸（page-layout.js 生成，绝对定位段落）────── */
+.dst-render {
+  margin-left: 6px;
+  margin-right: auto;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink2);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+.dst-render:hover { border-color: var(--accent); color: var(--accent); }
+.dst-render[aria-pressed="true"] { background: var(--accent-soft); border-color: #bcd4d1; color: var(--accent); }
+.dst-render:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.page-layout { margin-bottom: 16px; }
+.sheet-wrap { position: relative; width: 100%; }
+.page-sheet {
+  position: relative;
+  margin: 0 auto;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .07);
+  overflow: hidden;
+}
+.page-sheet.grown { box-shadow: 0 2px 10px rgba(0, 0, 0, .1); }
+
+/* 版式页里的段落：绝对定位，宽高由 bbox 决定，padding/margin 必须清零 */
+.page-sheet .dst-para.page-para {
+  position: absolute;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+/* 对齐由 JS 写在 .dst-para 上：.src 也要跟着居中，不能只让 .dst 居中 */
+.page-sheet .dst-para.align-center,
+.page-sheet .dst-para.align-center .dst { text-align: center; }
+/* 对照模式下原文/译文必须按文档流上下叠放，防止任何旧规则把它们绝对定位到同一格 */
+.page-sheet .dst-para .src,
+.page-sheet .dst-para .dst { position: static; }
+.page-sheet .page-para:hover { background: rgba(31, 95, 91, .06); }
+.page-sheet .page-para.active { background: var(--accent-soft); box-shadow: 0 0 0 1px rgba(31, 95, 91, .35); }
+.page-sheet .page-para.dim { opacity: .16; pointer-events: none; }
+
+/* 插图：把 PDF 原区域重画成 canvas，按 bbox 垫在文字层下面；渲染失败/预览页退化成虚线框 */
+.page-sheet .page-para { z-index: 1; }
+.page-sheet .page-figure {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: 2px;
+}
+.page-sheet .page-figure.figure-empty {
+  border: 1px dashed var(--line);
+  background: rgba(28, 28, 26, .025);
+}
+
+/* 对照模式：原文小字排在译文上方（只在同一格内，不额外占位） */
+.page-sheet .dst-para .src {
+  font-size: .72em;
+  line-height: 1.3;
+  margin: 0 0 .35em;
+  color: var(--ink3);
+  opacity: .78;
+  white-space: pre-wrap;
+}
+.page-sheet .dst-para .dst {
+  font-size: 1em;
+  line-height: inherit;
+  max-width: none;
+  margin: 0;
+}
+.page-sheet .dst-para .dst p { margin: 0 0 .4em; }
+.page-sheet .dst-para .dst p:last-child { margin-bottom: 0; }
+.page-sheet .dst-para .dst ul,
+.page-sheet .dst-para .dst ol { margin: .2em 0; padding-left: 1.1em; }
+.page-sheet .dst-para .dst li { margin: 0; }
+
+/* 字号由 inline font-size / line-height 统一控制，这里把旧的固定 px 字号全部压回 1em */
+.page-sheet .dst-para.tier-h1 .dst,
+.page-sheet .dst-para.tier-h2 .dst,
+.page-sheet .dst-para.tier-small .dst,
+.page-sheet .dst-para.role-title .dst,
+.page-sheet .dst-para.role-reference .dst,
+.page-sheet .dst-para.role-header .dst,
+.page-sheet .dst-para.role-footer .dst,
+.page-sheet .dst-para.role-page-number .dst,
+.page-sheet .dst-para.role-figure-label .dst,
+.page-sheet .dst-para.role-caption .dst,
+.page-sheet .dst-para .label-src {
+  font-size: 1em;
+  line-height: inherit;
+}
+.page-sheet .dst-para.tier-h1 .dst { margin: 0; }
+.page-sheet .dst-para.tier-h2 .dst { margin: 0; }
+.page-sheet .dst-para.role-quote .dst { padding-left: .5em; border-left-width: 2px; }
+.page-sheet .dst-para .pending-src { font-style: normal; opacity: .8; }
+
+/* app.css 的通用空态 .empty 带 40px 内边距；段落里的「（未翻译）」/原文占位继承它后
+   内容宽度会被挤到 0（一个字一行），这里必须清掉 */
+.dst-para .dst.empty { padding: 0; }
+
+/* 缺少 bbox 的段落：列在纸下方，按线性段落显示，不丢内容 */
+.sheet-orphans { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.sheet-orphans-tip { font-size: 12px; color: var(--muted); padding: 2px 4px 6px; }
+.sheet-orphans .dst-para { padding: 6px 8px; }
+

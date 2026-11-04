@@ -135,6 +135,26 @@ CREATE VIRTUAL TABLE IF NOT EXISTS segments_fts USING fts5(
 );
 
 -- ─────────────────────────────────────────────────────────────
+-- page_figures（v5）：每页图形区域（供前端把图保留在译文页上）
+-- boxes 是 JSON `[[x0,y0,x1,y1], ...]`，**PDF 点、y 向上、原点在左下角**，
+-- 与 segments.bbox 完全同一口径（前端用同一个 convertToViewportPoint 换算）。
+-- width/height 是该页 getViewport({scale:1}) 的可视尺寸（已含 rotate）——
+-- 前端按真实页面比例排版，不再依赖写死的 1/1.294。
+-- 与 migrate.js 里的 PAGE_FIGURES_DDL 必须逐字一致（新库走这里，老库走 v5 迁移）。
+-- ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS page_figures (
+  asset_id   INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  page_no    INTEGER NOT NULL,                     -- 1-based
+  boxes      TEXT    NOT NULL DEFAULT '[]',        -- JSON [[x0,y0,x1,y1],...]；PDF 点、y 向上
+  width      REAL,                                 -- 该页可视宽（pt，已含 rotate）
+  height     REAL,                                 -- 该页可视高（pt）
+  version    INTEGER NOT NULL DEFAULT 1,           -- 图区算法版本（figures.FIGURE_VERSION）
+  updated_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (asset_id, page_no)
+);
+CREATE INDEX IF NOT EXISTS idx_page_figures_asset ON page_figures(asset_id);
+
+-- ─────────────────────────────────────────────────────────────
 -- translations：按段译文缓存（内容寻址主键，M2 写入）
 -- cache_key = sha256(engine \0 model \0 tgt_lang \0 prompt_fp \0 extract_version \0 text)
 -- （srcLang 不参与，理由见 §21 R3）
@@ -252,4 +272,6 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at INTEGER NOT NULL
 );
 
-PRAGMA user_version = 3;
+-- 新库直接落在最新版本上（schema.sql 已含 v2~v5 的全部对象与列）；
+-- 老库由 migrate.js 的 MIGRATIONS 逐级补齐，两边版本号必须一致。
+PRAGMA user_version = 5;

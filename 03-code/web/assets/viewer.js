@@ -195,6 +195,60 @@ export class Viewer {
     container.append(frag);
   }
 
+  /** 该页的 PDF 点尺寸（未缩放、已含 rotate）；未打开或未建页节点时返回 null */
+  pageSizePt(pageNo) {
+    const entry = this.pageEls.get(pageNo);
+    if (!entry || !entry.viewport) return null;
+    return {
+      width: entry.viewport.width / this.scale,
+      height: entry.viewport.height / this.scale,
+    };
+  }
+
+  /**
+   * 把某页的一块区域（PDF 点、bbox `[x0,y0,x1,y1]`、y 向上、原点左下）画进调用方的 canvas。
+   *
+   * 用途：译文版式还原页要把「插图」按原位保留下来。插图本身是位图/矢量路径，抽不出来，
+   * 只能在浏览器里按区域重渲染一次。用 `transform` 把整页平移，让目标区域的左上角落在
+   * canvas 的 (0,0)，超出画布的部分由 canvas 边界自然裁掉（不额外 clip，省一次 save/restore）。
+   *
+   * @param {number} pageNo 1-based
+   * @param {[number,number,number,number]} box PDF 点的 bbox
+   * @param {HTMLCanvasElement} canvas 目标画布（后备缓冲尺寸由本方法设置，CSS 尺寸由调用方设）
+   * @param {{scale?:number}} [opts] scale：渲染倍率，默认跟随当前缩放
+   * @returns {Promise<boolean>} 是否画成功
+   */
+  async renderRegion(pageNo, box, canvas, opts = {}) {
+    if (!this.doc || !canvas || !Array.isArray(box) || box.length !== 4) return false;
+    const page = await this.doc.getPage(pageNo);
+    const base = page.getViewport({ scale: 1 });
+    const pageH = base.height;
+    const [bx0, by0, bx1, by1] = box.map(Number);
+    if (![bx0, by0, bx1, by1].every(Number.isFinite)) return false;
+    const x0 = Math.min(bx0, bx1);
+    const x1 = Math.max(bx0, bx1);
+    const y0 = Math.min(by0, by1);
+    const y1 = Math.max(by0, by1);
+    const wPt = Math.max(0.5, x1 - x0);
+    const hPt = Math.max(0.5, y1 - y0);
+    const scale = Math.min(4, Math.max(0.25, Number(opts.scale) || this.scale));
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const viewport = page.getViewport({ scale });
+    canvas.width = Math.max(1, Math.round(wPt * scale * dpr));
+    canvas.height = Math.max(1, Math.round(hPt * scale * dpr));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return false;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // PDF y 向上 → 视口 y 向下：区域上边界 y1 对应视口的 (pageH - y1)
+    await page.render({
+      canvasContext: ctx,
+      viewport,
+      transform: [1, 0, 0, 1, -x0 * scale, -(pageH - y1) * scale],
+    }).promise;
+    return true;
+  }
+
   trackCurrentPage() {
     if (!this.pageEls.size) return;
     const top = this.scrollHost.scrollTop;

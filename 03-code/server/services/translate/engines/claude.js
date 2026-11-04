@@ -2,6 +2,7 @@
  * Claude 引擎（Anthropic messages 协议）。
  */
 import { translateItems } from './shared.js';
+import { TRANSLATE_SYSTEM } from '../prompts.js';
 import { anthropicChat } from '../../llm/client.js';
 
 /**
@@ -30,8 +31,10 @@ export function createClaudeEngine(cfg) {
             provider: cfg.provider,
             model: cfg.model,
             prompt,
+            // 「资料不是指令」的隔离说明走 Anthropic 的 system 字段（不进 prompt_fp）
+            system: TRANSLATE_SYSTEM,
             maxTokens: cfg.maxTokens,
-            temperature: cfg.temperature,
+            temperature: Number.isFinite(ctx.temperature) ? ctx.temperature : cfg.temperature,
             timeoutMs: ctx.timeoutMs,
             signal: ctx.signal,
           });

@@ -13,21 +13,31 @@ import { config } from '../../config.js';
 import { all, get, run, tx } from '../../db.js';
 import { AppError } from '../../errors.js';
 import { createLogger } from '../../logger.js';
-import { buildBatches } from '../segment.js';
 import { indexTranslation } from '../fts.js';
 import { requireEngine, engineChain, resolveModel } from './engines/registry.js';
 import { buildCacheKey } from './cacheKey.js';
-import { promptFingerprint, resolveTemplate } from './prompts.js';
+import { promptFingerprint, resolveTemplate, STRICT_TEMPERATURE } from './prompts.js';
+import {
+  alignBatchOutput,
+  assessSource,
+  CAPTION_ROLES,
+  chunkSegments,
+  isCaptionLike,
+  screenTranslation,
+  translatableSql,
+} from './quality.js';
 
 const log = createLogger('translate');
 
 /**
  * 「值得翻译」的段落口径（四条 SQL 共用，避免各处漏改）。
- * 除公式段与图表标签外，**页眉/页脚/页码也不送翻**：它们是跨页重复的栏目信息，
- * 模型经常半翻半留（实测出现 `18 SEEE JOURNAL OF ROBOTICS…`、`16 JOURNAL IEEE` 这类半成品），
- * 阅读器直接显示原文小字更干净，也省 token。
+ * 判定规则与理由见 `quality.js` 的 NEVER_TRANSLATE_ROLES：
+ * 图内文字是符号碎片（误翻即 EVRNKSHUHO 式大写垃圾）、页眉页脚是跨页重复的栏目信息
+ * （模型经常半翻半留，实测 `18 SEEE JOURNAL OF ROBOTICS…`）、页码只是分页标记、
+ * 公式是符号串、参考文献必须原文照录（翻译即销毁可引用性）。
+ * 这些段不送翻：阅读器直接显示原文，比"半译半留"更干净，也省 token。
  */
-const TRANSLATABLE = "is_math = 0 AND is_label = 0 AND coalesce(role,'') NOT IN ('header','footer','page-number')";
+const TRANSLATABLE = translatableSql();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -165,7 +175,7 @@ export function startTranslate(no, opts = {}) {
   return { jobId, reused: false, status: 'running' };
 }
 
-/** 取段（按 scope 过滤，只取可翻译段） */
+/** 取段（按 scope 过滤，只取可翻译段）。带 role：切批时图注要单独成批、送翻前还要过可翻性闸 */
 function loadSegments(job) {
   const params = [job.asset_id];
   let where = `asset_id = ? AND ${TRANSLATABLE}`;
@@ -181,7 +191,7 @@ function loadSegments(job) {
       params.push(...pages);
     }
   }
-  return all(`SELECT id, page_no, ord, text FROM segments WHERE ${where} ORDER BY page_no ASC, ord ASC`, params);
+  return all(`SELECT id, page_no, ord, role, text FROM segments WHERE ${where} ORDER BY page_no ASC, ord ASC`, params);
 }
 
 /** 排序：可见页优先（|page-anchor| 升序），其次 page/ord（§9.1.3 [4]） */
@@ -223,18 +233,26 @@ async function translateBatch(batch, engineChainList, ctx) {
           work: ctx.work,
           promptFp: ctx.promptFp,
           model: ctx.model,
+          kind: ctx.kind, // 'caption' → 追加图注专用提示（图注单独成批，见 runJob 的 plans）
+          strict: Boolean(ctx.strict), // 体检打回后的严格重试：追加「必须输出中文」
+          temperature: ctx.strict ? STRICT_TEMPERATURE : undefined,
           signal: ctx.signal,
           onUsage: ctx.onUsage,
         });
-        if (!Array.isArray(out) || out.length !== batch.length) {
-          throw new AppError('E_UPSTREAM', `引擎返回段数不符：期望 ${batch.length}，实际 ${Array.isArray(out) ? out.length : '非数组'}`, {
+        if (!Array.isArray(out) || !out.length) {
+          throw new AppError('E_UPSTREAM', `引擎返回非数组或空数组（期望 ${batch.length} 段）`, { engine: engine.id });
+        }
+        if (out.length !== batch.length) {
+          // 不再整批失败：按序对齐、缺失补 null（对齐后的 null 段不写缓存，由上层体检/补译决定）。
+          // 旧实现此处 throw → 整批重发；而"长度相同但内容串段"根本发现不了，会把下一段译文写进本段。
+          log.warn('translate.length_mismatch', {
             engine: engine.id,
+            expected: batch.length,
+            got: out.length,
+            filledNull: alignBatchOutput(batch.length, out).filter((x) => x == null).length,
           });
         }
-        if (out.some((x) => !x || !String(x).trim())) {
-          throw new AppError('E_UPSTREAM', '引擎返回空译文段落', { engine: engine.id });
-        }
-        return { out, engine: engine.id };
+        return { out: alignBatchOutput(batch.length, out), engine: engine.id };
       } catch (e) {
         errors.push({ engine: engine.id, code: e.code || 'E_UPSTREAM', message: e.message });
         if (e.code === 'E_CANCELED' || e.code === 'E_LLM_KEY_MISSING' || e.code === 'E_ENGINE_UNCONFIGURED') throw e;
@@ -263,7 +281,26 @@ async function runJob(jobId, { engineIds }) {
   }
   const engine = chain[0];
 
-  const segments = loadSegments(job);
+  // 取段后再过一道「原文可翻性」闸：SQL 已按角色挡掉 figure-label/header/footer/page-number/
+  // equation/reference，这里只兜空文本与纯符号段。被跳过的段**不计入进度总数**（否则页面永远
+  // 显示未完成），也不送翻、不写缓存 —— 阅读器直接显示原文。
+  const loaded = loadSegments(job);
+  const segments = [];
+  const skippedByCode = new Map();
+  for (const seg of loaded) {
+    const verdict = assessSource(seg.text, seg.role);
+    if (verdict.translatable) segments.push(seg);
+    else skippedByCode.set(verdict.code, (skippedByCode.get(verdict.code) || 0) + 1);
+  }
+  if (skippedByCode.size) {
+    log.info('translate.skip_untranslatable', {
+      jobId,
+      loaded: loaded.length,
+      kept: segments.length,
+      skipped: Object.fromEntries(skippedByCode),
+    });
+  }
+
   const extractedVersion = asset.extract_version;
   const keyOf = (seg) =>
     buildCacheKey({
@@ -336,27 +373,35 @@ async function runJob(jobId, { engineIds }) {
   pushProgress(true);
 
   const ordered = sortByAnchor(misses, job.anchor_page);
-  const batches = buildBatches(ordered.map((s) => s.text), {
-    maxChars: engine.limits.maxChars,
-    maxItems: engine.limits.maxItems,
-  });
-
-  // 把 batch 的文本映射回 segment 对象（buildBatches 只处理字符串，这里按顺序切回）
-  let cursor = 0;
-  const batchObjects = batches.map((texts) => {
-    const slice = ordered.slice(cursor, cursor + texts.length);
-    cursor += texts.length;
-    return slice;
-  });
-  batchCount = batchObjects.length;
+  // 切批：**保留 segment 对象**（不再用「text 数组 + cursor 回切」）。
+  // 旧写法里 buildBatches 会跳过空串/纯空白段，而 cursor 仍按返回条数推进；
+  // 只要跳过一段，其后所有 batch 的 segment 全部错位一格 → 译文串段（顺序错乱根因之一）。
+  // 图注判定不能只看 role：实测抽取器把真正的图注（`Fig. 3 Comparison between …`）标成 body，
+  // 只有图内标注（`CoT-SC ToT,LMZSP,RAP Prompts`）才标 figure-label。只按 role 分流会让图注
+  // 混进普通正文批 → 模型把图内符号也「翻译」一遍，产出 EVRNKSHUHO 式大写垃圾。
+  const isCaption = (s) => CAPTION_ROLES.includes(String(s.role || '')) || isCaptionLike(s.text);
+  const captionSegs = ordered.filter(isCaption);
+  const bodySegs = ordered.filter((s) => !isCaption(s));
+  const plans = [
+    ...chunkSegments(bodySegs, {
+      maxChars: engine.limits.maxChars,
+      maxItems: engine.limits.maxItems,
+    }).map((segs) => ({ segs, caption: false })),
+    // 图注/表注单独成批：条数收紧（图注短、编号密），并带专用提示（见 quality.CAPTION_ROLES）
+    ...chunkSegments(captionSegs, {
+      maxChars: Math.min(Number(engine.limits.maxChars) || 1200, 1200),
+      maxItems: Math.min(Number(engine.limits.maxItems) || 4, 4),
+    }).map((segs) => ({ segs, caption: true })),
+  ];
+  batchCount = plans.length;
 
   let lastProgressAt = 0;
   const flushEvery = 300;
   const failedFingerprints = new Map();
 
   await pool(
-    batchObjects,
-    async (batch) => {
+    plans,
+    async ({ segs: batch, caption }) => {
       if (runner.canceled || runner.ctl.signal.aborted) return;
       const fingerprint = batch.map((s) => s.id).join(',');
       const attemptsSoFar = failedFingerprints.get(fingerprint) || 0;
@@ -367,55 +412,120 @@ async function runJob(jobId, { engineIds }) {
         return;
       }
       requests += 1;
+      const batchCtx = {
+        srcLang: job.src_lang,
+        tgtLang: job.tgt_lang,
+        work,
+        promptFp: job.prompt_fp,
+        model: job.model,
+        kind: caption ? 'caption' : 'body',
+        signal: runner.ctl.signal,
+        onUsage: (u) => {
+          usage.promptTokens += u.promptTokens || 0;
+          usage.completionTokens += u.completionTokens || 0;
+        },
+      };
       try {
-        const { out, engine: usedEngine } = await translateBatch(batch, chain, {
-          srcLang: job.src_lang,
-          tgtLang: job.tgt_lang,
-          work,
-          promptFp: job.prompt_fp,
-          model: job.model,
-          signal: runner.ctl.signal,
-          onUsage: (u) => {
-            usage.promptTokens += u.promptTokens || 0;
-            usage.completionTokens += u.completionTokens || 0;
-          },
-        });
-        const now = Date.now();
-        // 译文落库与译文索引写在**同一事务**里（D22）：否则会出现「有译文但搜不到」的静默错误
-        tx(() => {
-          batch.forEach((seg, i) => {
-            run(
-              `INSERT INTO translations(cache_key, asset_id, segment_id, page_no, ord, src_text, dst_text, engine, model,
-                                        src_lang, tgt_lang, prompt_fp, extract_version, created_at, last_hit_at, hits)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
-               ON CONFLICT(cache_key) DO UPDATE SET dst_text = excluded.dst_text, segment_id = excluded.segment_id,
-                                                    last_hit_at = excluded.last_hit_at`,
-              [
-                seg.cacheKey,
-                job.asset_id,
-                seg.id,
-                seg.page_no,
-                seg.ord,
-                seg.text,
-                out[i],
-                job.engine,
-                job.model,
-                job.src_lang,
-                job.tgt_lang,
-                job.prompt_fp,
-                extractedVersion,
-                now,
-                now,
-              ],
-            );
-            indexTranslation(seg.id, { engine: job.engine, tgtLang: job.tgt_lang, text: out[i] });
+        const { out: raw, engine: usedEngine } = await translateBatch(batch, chain, batchCtx);
+
+        // 落库前体检（quality.screenTranslation）：低 CJK 占比 / 无空格拉丁大写垃圾串 /
+        // 整段英文原样返回 / 空译文 → 判失败。先只收集坏段，不落库。
+        const aligned = alignBatchOutput(batch.length, raw);
+        const accepted = new Array(batch.length).fill(null);
+        const bad = [];
+        const verdictAt = (i, dst) => screenTranslation({ src: batch[i].text, dst, tgtLang: job.tgt_lang });
+        for (let i = 0; i < batch.length; i += 1) {
+          const v = verdictAt(i, aligned[i]);
+          if (v.ok) accepted[i] = aligned[i];
+          else bad.push(i);
+        }
+
+        // 二次校验：**只重发被判坏的段**（temperature 降到 0.1 + 追加「必须输出中文」）。
+        // 不整批重发：乱码通常只出现在个别段，整批重发等于为几段垃圾再付一遍钱。
+        const rejected = [];
+        if (bad.length) {
+          const retrySegs = bad.map((i) => batch[i]);
+          let retryRaw = null;
+          try {
+            retryRaw = (await translateBatch(retrySegs, chain, { ...batchCtx, strict: true })).out;
+          } catch (e) {
+            if (e.code === 'E_CANCELED') throw e;
+            log.warn('translate.strict_retry_failed', { jobId, size: retrySegs.length, code: e.code, message: e.message });
+          }
+          const retryAligned = alignBatchOutput(retrySegs.length, retryRaw);
+          bad.forEach((i, k) => {
+            const v = verdictAt(i, retryAligned[k]);
+            if (v.ok) accepted[i] = retryAligned[k];
+            else {
+              rejected.push({
+                i,
+                codes: v.codes,
+                cjkRatio: Number(v.metrics.cjkRatio.toFixed(3)),
+                latinRuns: v.metrics.latinRuns,
+                sample: String(retryAligned[k] == null ? '' : retryAligned[k]).slice(0, 60),
+                src: String(batch[i].text || '').slice(0, 60),
+              });
+            }
           });
-        });
-        batch.forEach((seg, i) => {
-          doneSegments += 1;
-          pageDone.set(seg.page_no, (pageDone.get(seg.page_no) || 0) + 1);
-          if (usedEngine !== engine.id) usage.fallbackCount += 1;
-        });
+        }
+
+        const now = Date.now();
+        const good = [];
+        for (let i = 0; i < batch.length; i += 1) if (accepted[i]) good.push(i);
+        // 译文落库与译文索引写在**同一事务**里（D22）：否则会出现「有译文但搜不到」的静默错误。
+        // **只有通过体检的段才写**：乱码永不进缓存，避免被后续任务反复命中。
+        if (good.length) {
+          tx(() => {
+            for (const i of good) {
+              const seg = batch[i];
+              run(
+                `INSERT INTO translations(cache_key, asset_id, segment_id, page_no, ord, src_text, dst_text, engine, model,
+                                          src_lang, tgt_lang, prompt_fp, extract_version, created_at, last_hit_at, hits)
+                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+                 ON CONFLICT(cache_key) DO UPDATE SET dst_text = excluded.dst_text, segment_id = excluded.segment_id,
+                                                     last_hit_at = excluded.last_hit_at`,
+                [
+                  seg.cacheKey,
+                  job.asset_id,
+                  seg.id,
+                  seg.page_no,
+                  seg.ord,
+                  seg.text,
+                  accepted[i],
+                  job.engine,
+                  job.model,
+                  job.src_lang,
+                  job.tgt_lang,
+                  job.prompt_fp,
+                  extractedVersion,
+                  now,
+                  now,
+                ],
+              );
+              indexTranslation(seg.id, { engine: job.engine, tgtLang: job.tgt_lang, text: accepted[i] });
+            }
+          });
+        }
+        for (const i of good) doneSegments += 1;
+        for (const r of rejected) {
+          failedSegments += 1;
+          // 该段保持无译文（dst=null，阅读器显示原文），把证据打进日志供判断"重翻/重抽"
+          log.warn('translate.quality_rejected', {
+            jobId,
+            segmentId: batch[r.i].id,
+            assetId: job.asset_id,
+            page: batch[r.i].page_no,
+            ord: batch[r.i].ord,
+            codes: r.codes,
+            cjkRatio: r.cjkRatio,
+            latinRuns: r.latinRuns,
+            sample: r.sample,
+            src: r.src,
+          });
+        }
+        // 进度：被拒绝的段本次运行也不会再动，按"已处理完"计入 pageDone，否则整页永远显示未完成
+        for (const seg of batch) pageDone.set(seg.page_no, (pageDone.get(seg.page_no) || 0) + 1);
+        if (usedEngine !== engine.id) usage.fallbackCount += 1;
         batchesDone += 1;
         const nowMs = Date.now();
         if (nowMs - lastProgressAt >= flushEvery) {
@@ -453,9 +563,9 @@ async function runJob(jobId, { engineIds }) {
     usage,
     cacheHits: hits,
     requests,
-    batches: batchObjects.length,
+    batches: plans.length,
   });
-  jobStats.set(jobId, { requests, batches: batchObjects.length, cacheHits: hits, usage, finishedAt: Date.now() });
+  jobStats.set(jobId, { requests, batches: plans.length, cacheHits: hits, usage, finishedAt: Date.now() });
   log.info('translate.finished', {
     jobId,
     status,
@@ -463,7 +573,7 @@ async function runJob(jobId, { engineIds }) {
     done: doneSegments,
     failed: failedSegments,
     cacheHits: hits,
-    batches: batchObjects.length,
+    batches: plans.length,
     requests,
     durationMs: Date.now() - startedAt,
   });
@@ -719,20 +829,29 @@ export async function testEngine({ engine: engineId, tgtLang, sample } = {}) {
   return { ok: true, engine: engine.id, model: resolveModel(engine.id), sample: out[0], latencyMs: Date.now() - t0 };
 }
 
-/** 试译（POST /api/translate/preview，不写缓存） */
+/** 试译（POST /api/translate/preview，不写缓存）。附带体检结论：预览里就能看到"这段会不会被判垃圾" */
 export async function previewTranslate({ text, engine: engineId, tgtLang, srcLang } = {}) {
   const src = String(text || '').trim();
   if (!src) throw new AppError('E_BAD_REQUEST', '缺少 text', { field: 'text' });
   if (src.length > 2000) throw new AppError('E_BAD_REQUEST', 'text 不能超过 2000 字符', { field: 'text', length: src.length });
   const engine = requireEngine(engineId || config.translate.engine);
+  const lang = tgtLang || config.translate.tgtLang;
   const t0 = Date.now();
   const out = await engine.translate([src], {
     srcLang: srcLang || 'auto',
-    tgtLang: tgtLang || config.translate.tgtLang,
+    tgtLang: lang,
     promptFp: promptFingerprint(resolveTemplate(config)),
     model: resolveModel(engine.id),
   });
-  return { dst: out[0], engine: engine.id, model: resolveModel(engine.id), latencyMs: Date.now() - t0, cached: false };
+  return {
+    dst: out[0],
+    engine: engine.id,
+    model: resolveModel(engine.id),
+    latencyMs: Date.now() - t0,
+    cached: false,
+    // 只做判定、不改写：试译接口的用途就是让人看到模型的原始输出与被判坏的原因
+    quality: screenTranslation({ src, dst: out[0], tgtLang: lang }),
+  };
 }
 
 /** 双语 Markdown 导出（§8.4 / §16.1 store.toMarkdown 的语义） */

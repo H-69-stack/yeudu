@@ -76,6 +76,15 @@ result results resulting effect effects affect affects affected approach approac
 analyzes analyzed analysis analyses compare compares compared comparing differ differs differed different
 following followed follows using usually however therefore various several important general specific
 according according to along across among around available available because before behind below between
+together another whether although though enough almost already among around because before behind below beneath
+beside besides between beyond during either except inside outside since through throughout toward under until
+upon within without while whose themselves ourselves itself himself herself anyone everyone someone nothing
+something anything everything however therefore moreover furthermore nevertheless accordingly consequently
+meanwhile otherwise instead rather thus hence baseline baselines backtrack followup sandbox toolformer chatdev
+autogpt react reflexion computational representative implementation implementations applicability buildability
+understandable interpretable functionality prioritization inconsistencies consistencies meaningful straightforward
+underlying overlapping corresponding previous numerous significant useful powerful successful difficult similar
+interesting possible impossible available useful different important
 `
 
 const COMMON = new Set(
@@ -92,11 +101,26 @@ const SINGLE_OK = new Set(['a', 'i']);
 /**
  * 高频功能词：`of control` / `in part` / `to the` 这类「虚词 + 实词」的粘连是最常见的一类，
  * 切开后两片里往往只有一片够长，会被下面的「至少两片 ≥4 字母」规则误伤，因此单独放行。
+ *
+ * v5 扩充：粘连修复的**唯一**正证据就是「切分边界上落着一个虚词」。表太窄会把真实粘连判成
+ * 一个整词（`mustmake` / `tomake` / `Shelikes`），表太宽则会切碎派生词 —— 所以这里只收
+ * 真正的封闭类词（冠词/介词/连词/代词/助动词/情态动词/高频副词），并且用
+ * `plausibleGlueSplit` 里的两条结构护栏（见该函数）挡住 `in|consistencies` 这类误拆。
  */
 const FUNCTION_WORDS = new Set([
   'of', 'to', 'in', 'on', 'at', 'by', 'for', 'from', 'with', 'and', 'or', 'the', 'a', 'an',
-  'is', 'are', 'was', 'were', 'be', 'been', 'we', 'it', 'its', 'as', 'if', 'so', 'do', 'no',
-  'up', 'he', 'she', 'my', 'not', 'but', 'that', 'this', 'than', 'then', 'can', 'will',
+  'is', 'are', 'was', 'were', 'be', 'been', 'being', 'am', 'do', 'does', 'did', 'done',
+  'have', 'has', 'had', 'having', 'will', 'would', 'shall', 'should', 'can', 'could', 'may',
+  'might', 'must', 'we', 'it', 'its', 'they', 'them', 'their', 'this', 'that', 'these', 'those',
+  'he', 'she', 'his', 'her', 'him', 'my', 'your', 'our', 'us', 'you', 'i', 'as', 'if', 'so',
+  'do', 'no', 'nor', 'not', 'but', 'up', 'out', 'off', 'over', 'under', 'into', 'onto', 'upon',
+  'via', 'per', 'than', 'then', 'there', 'here', 'which', 'who', 'whom', 'whose', 'what',
+  'when', 'where', 'why', 'how', 'all', 'any', 'both', 'each', 'every', 'few', 'many', 'more',
+  'most', 'less', 'least', 'several', 'some', 'such', 'only', 'also', 'just', 'even', 'still',
+  'yet', 'already', 'again', 'once', 'twice', 'one', 'two', 'other', 'others', 'about', 'above',
+  'across', 'after', 'against', 'along', 'among', 'around', 'before', 'behind', 'below',
+  'beneath', 'beside', 'besides', 'between', 'beyond', 'during', 'except', 'inside', 'outside',
+  'since', 'through', 'throughout', 'toward', 'until', 'while', 'within', 'without', 'too', 'very',
 ]);
 
 
@@ -111,6 +135,39 @@ const UNKNOWN_PENALTY = 15; // 未知片重罚（兜底时才允许出现）
 const MIN_COVERAGE = 0.6; // 命中词表的字符占比下限
 const MAX_RUN = 64;
 const MAX_PIECES = 10;
+
+/**
+ * 派生词后缀（用于「这本身就是一个完整单词」的判定）。
+ * 只看**足够长的**派生后缀：`-s`/`-es`/`-ed` 这类屈折后缀在粘连串尾部也很常见
+ * （`forcontrollingmobilerobots` 也以 s 结尾），拿来当证据会把真实粘连全部挡住。
+ */
+const DERIVED_SUFFIX_RE =
+  /(ability|ibility|ization|isation|ation|ition|ution|ement|ments|ness|ities|ity|ives|ive|ously|ous|fully|ful|lessly|less|able|ible|ings|ing|isms|ism|ists|ist|ance|ence|ary|ory|ately|ate|antly|ant|ently|ent)$/;
+
+/**
+ * 这个 token 是否「像是一个完整派生词」而不是粘连产物。
+ * 长度窗口 12–16 是实测出来的：更短 `<ability>`/`<ation>` 类词（buildability 12、
+ * representative 14、inconsistencies 15）全落在窗口里；而真实粘连串通常 ≥17
+ * （`forcontrollingmobilerobots` 28、`layeredwithhigherlevellayerssubsuming` 38）。
+ */
+function looksDerivedWord(run) {
+  const w = run.toLowerCase();
+  if (w.length < 12 || w.length > 16) return false;
+  return DERIVED_SUFFIX_RE.test(w);
+}
+
+/** 驼峰/品牌名（MemorySandbox、ChatDev、AutoGPT）：词中大写是分词信号，不许再切 */
+function isCamelWord(run) {
+  return /[a-z][A-Z]/.test(run);
+}
+
+/**
+ * URL / 邮箱 / DOI 行：这类文本里的「粘连」是正常写法（`yankailin@ruc.edu.cn`、
+ * `https://openreview.net/forum?id=…`），切开会把地址切坏。
+ */
+function isUrlOrEmailish(text) {
+  return /@|\bhttps?\b\s*:|\bwww\b\s*[.:]|\.(?:com|org|net|edu|gov|io)\b|\bdoi\b\s*:/i.test(text);
+}
 
 /** 统一的词表形态：`{freq: Map, glue: Set}`，也兼容裸 Map */
 function norm(voc) {
@@ -255,6 +312,16 @@ function plausibleGlueSplit(pieces, n, strict) {
     // 中间不许出现 1~2 字母的碎渣片；长片段至少要有两片 ≥4 字母的真词
     if (p.length <= 2 && i > 0 && !COMMON.has(p.toLowerCase())) return false;
   }
+  // ——以下两条是 v5 新增的结构护栏，strict/宽松模式都生效——
+  // 1) 两片、总长 <14、且两片都不是虚词：更像一个被误拆的派生/复合词
+  //    （`baselines` → base|lines、`backtrack` → back|track、`sandbox` → sand|box）。
+  //    真实两词粘连几乎总含虚词（`ofcontrol` → of|control）或整体够长（`tocontrol` 更常见）。
+  if (pieces.length === 2 && n < 14 && !pieces.some((p) => FUNCTION_WORDS.has(p.toLowerCase()))) return false;
+  // 2) 「2 字母虚词 + ≥8 字母长词」是 `in|consistencies`、`un|derstanding` 这类误拆的典型形状：
+  //    虚词后的长词更可能本来就是整词的一部分（该词若真是派生词，前面已经由 looksDerivedWord 放行）。
+  if (pieces.length === 2 && pieces[0].length === 2 && FUNCTION_WORDS.has(pieces[0].toLowerCase()) && pieces[1].length >= 8) {
+    return false;
+  }
   if (n <= 8) return strict ? true : pieces.length <= 3;
   if (strict) {
     // 严格模式也要挡一下“全是短词”的切法：`outputscan` → `out puts can` 每片都成词，
@@ -265,6 +332,21 @@ function plausibleGlueSplit(pieces, n, strict) {
   // 「虚词 + 实词」两片式：`ofcontrol` → `of control`、`inthe` 这类在真实 PDF 里极常见，
   // 但按「两片 ≥4 字母」会被判不合格（`of` 只有 2 个字母），于是整段粘连永远切不开。
   return pieces.length === 2 && FUNCTION_WORDS.has(pieces[0].toLowerCase()) && pieces[1].length >= 4;
+}
+
+/**
+ * 粘连证据：切分边界上必须落着一个**虚词**（≥2 字母），才承认这是「被吞掉空格的两个词」。
+ * 单靠 DP 得分会把 `buildability → build ability`、`baselines → base lines` 这类完整单词切碎；
+ * 反过来，若虚词之外的部分本身像派生词（`in|consistencies`），则更可能是整词被误拆，一律否认。
+ * @param {string[]} pieces
+ */
+function hasGlueEvidence(pieces) {
+  const isFn = (p) => p.length >= 2 && FUNCTION_WORDS.has(p.toLowerCase());
+  const fn = pieces.filter(isFn);
+  if (!fn.length) return false;
+  const rest = pieces.filter((p) => !isFn(p));
+  if (rest.some((p) => looksDerivedWord(p))) return false;
+  return true;
 }
 
 /**
@@ -298,11 +380,12 @@ export function buildVocabulary(rawPages) {
     }
   }
 
-  // 第一层：可信短词（常用词表，或不太长且出现过 ≥2 次）
+  // 第一层：可信词（常用词表；或长度 ≤12 且出现 ≥2 次；或任何长度出现 ≥3 次）。
+  // 出现 3 次以上基本可以确认是真词 —— 粘连产物极少在同一文档里反复出现同一形状。
   const base = new Map();
   for (const [w, f] of counts) {
     if (COMMON.has(w)) base.set(w, f);
-    else if (w.length <= 9 && f >= 2) base.set(w, f);
+    else if ((w.length <= 12 && f >= 2) || f >= 3) base.set(w, f);
   }
 
   // 第二层：拿短词表反查粘连 token（词形合法的词不参与，避免把 implementation 拆碎）
@@ -311,7 +394,11 @@ export function buildVocabulary(rawPages) {
     if (w.length < 8 || COMMON.has(w) || base.has(w)) continue;
     const probeVoc = { freq: base, glue: new Set() };
     if (morphScore(w, probeVoc) > 0) continue; // 形如 xxx-ation / xxx-ing 的合法派生词
-    if (segmentRun(w, probeVoc)) glue.add(w);
+    if (looksDerivedWord(w)) continue; // buildability / representative：形似完整派生词
+    if (isCamelWord(w)) continue; // MemorySandbox / ChatDev：词中大写本身就是分词证据
+    const pieces = segmentRun(w, probeVoc);
+    if (!pieces || !hasGlueEvidence(pieces)) continue; // 切分边界上没有虚词 → 证据不足
+    glue.add(w);
   }
 
   // 最终词表：短词 + 未被判为粘连的长 token
@@ -353,6 +440,8 @@ export function restoreSpaces(text, voc) {
   if (!text || typeof text !== 'string') return text;
   const dejoined = fixSplitLetters(text);
   if (!/[A-Za-z]{5,}/.test(dejoined)) return dejoined;
+  // URL / 邮箱 / DOI 行不切：那里的“粘连”是正常写法，切开等于把地址切坏
+  if (isUrlOrEmailish(dejoined)) return dejoined;
   text = dejoined;
 
   const parts = text.split(/(\s+)/);
@@ -371,7 +460,15 @@ export function restoreSpaces(text, voc) {
       // 否则 `layeredwithhigherlevellayerssubsuming` 会因 `subsuming` 不在词表里而整段不切。
       // 非粘连 token 仍用严格模式（全片成词），以保住 `applicability` 这类完整单词。
       const gluey = isGlue(run, voc);
-      const trusted = !gluey && (run.length < 5 || morphScore(run, voc) > 0);
+      // trusted = 已经确信是整词，不再尝试切分：
+      //  · 词表命中 / 词形还原命中（原有规则）
+      //  · 驼峰词（MemorySandbox）
+      //  · 12–16 字母的派生词（buildability、representative、inconsistencies —— 这些都是
+      //    完整英文单词，DP 却能靠 build+ability / in+consistencies 拿到正分，必须在这里拦住）
+      const trusted =
+        isCamelWord(run) ||
+        looksDerivedWord(run) ||
+        (!gluey && (run.length < 5 || morphScore(run, voc) > 0));
       if (trusted) {
         out += run;
         continue;

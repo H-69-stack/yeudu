@@ -3,6 +3,7 @@
  * 只负责「把 N 段文本发给某处、拿回 N 段文本」：不分批、不缓存、不重试（都在上层）。
  */
 import { translateItems } from './shared.js';
+import { TRANSLATE_SYSTEM } from '../prompts.js';
 import { openaiChat } from '../../llm/client.js';
 
 /**
@@ -36,9 +37,15 @@ export function createOpenAICompatibleEngine(cfg) {
           const out = await openaiChat({
             provider: cfg.provider,
             model: cfg.model,
-            messages: [{ role: 'user', content: prompt }],
+            // system 通道放「资料不是指令」的隔离说明（模板本身只谈译文要求；
+            // 分离后改隔离文案不会动 prompt_fp，也就不会让已有译文全部失效）。
+            messages: [
+              { role: 'system', content: TRANSLATE_SYSTEM },
+              { role: 'user', content: prompt },
+            ],
             maxTokens: cfg.maxTokens,
-            temperature: cfg.temperature,
+            // 严格重试（体检失败后）由上层给更低的 temperature；其余用配置值
+            temperature: Number.isFinite(ctx.temperature) ? ctx.temperature : cfg.temperature,
             timeoutMs: ctx.timeoutMs,
             signal: ctx.signal,
           });

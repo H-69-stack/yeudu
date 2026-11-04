@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>版式还原自检 · Agent 工作流文献管理系统</title>
+    <link rel="stylesheet" href="assets/app.css" />
+    <link rel="stylesheet" href="assets/reader.css" />
+    <style>
+      /* 自检页只做「右栏」：不加载 PDF、不依赖 viewer，直接从 /segments 还原版式 */
+      body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); }
+      .lp-head {
+        display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+        padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--border);
+        position: sticky; top: 0; z-index: 6;
+      }
+      .lp-head h1 { font-family: var(--serif); font-size: 15px; font-weight: 600; margin: 0 10px 0 0; }
+      .lp-head label { font-size: 12.5px; color: var(--ink3); display: inline-flex; align-items: center; gap: 5px; }
+      .lp-head input[type="text"], .lp-head select {
+        font: inherit; font-size: 13px; padding: 4px 8px;
+        border: 1px solid var(--border); border-radius: 6px; background: #fff;
+      }
+      .lp-head input[type="text"] { width: 64px; }
+      .lp-head a { font-size: 12.5px; color: var(--accent); text-decoration: none; }
+      .lp-head a:hover { text-decoration: underline; }
+      #status { margin-left: auto; font-size: 12px; color: var(--ink3); font-variant-numeric: tabular-nums; }
+      .lp-note {
+        margin: 0; padding: 9px 18px; font-size: 12.5px; line-height: 1.7; color: var(--ink3);
+        background: rgba(31, 95, 91, .04); border-bottom: 1px solid var(--line);
+      }
+      .lp-note b { color: var(--ink2); font-weight: 600; }
+      .lp-main {
+        height: calc(100vh - 108px); overflow: auto;
+        padding: 16px 18px 56px; border-left: 0;
+      }
+      #dstList { max-width: 900px; margin: 0 auto; }
+      .lp-empty { padding: 30px 8px; font-size: 13px; color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <header class="lp-head">
+      <h1>版式还原自检</h1>
+      <form id="lpForm" style="display: contents">
+        <label>work <input type="text" id="noInput" value="1.8" spellcheck="false" /></label>
+        <label>引擎
+          <select id="engine">
+            <option value="deepseek" selected>DeepSeek</option>
+            <option value="qwen">Qwen</option>
+          </select>
+        </label>
+        <button type="submit" class="primary">载入</button>
+      </form>
+      <label><input type="checkbox" id="dual" /> 显示原文（对照）</label>
+      <label>排版
+        <select id="renderSel">
+          <option value="layout" selected>版式还原</option>
+          <option value="flow">线性段落</option>
+        </select>
+      </label>
+      <a id="openReader" href="reader.html?no=1.8" target="_blank" rel="noreferrer">在阅读页打开</a>
+      <span id="status">—</span>
+    </header>
+
+    <p class="lp-note">
+      <b>说明：</b>本页只按段落 bbox 还原文字版式（标题居中的字号层级、双栏、图注/脚注位置），
+      <b>不加载 PDF</b>，所以插图位置只画虚线框占位；阅读页会把 PDF 原区域重画进右栏，图和文字都在原位。
+      页尺寸优先用接口返回的 width/height，缺省按 aspect 估算；阅读页会用 PDF viewport 的真实尺寸重排。
+      找个有译文的例子：<b>?no=1.11</b>（10 页 IEEE 双栏，268 段已有 DeepSeek 译文）。
+    </p>
+
+    <main class="dst-pane lp-main" id="dstPane">
+      <div id="dstList"><div class="lp-empty">输入 work 编号后载入…</div></div>
+    </main>
+
+    <!-- Markdown 渲染三件套：同步脚本先于 module 执行，模块里可直接读 window.marked / DOMPurify -->
+    <script src="assets/vendor/md/marked.min.js"></script>
+    <script src="assets/vendor/md/purify.min.js"></script>
+    <script src="assets/vendor/md/highlight.min.js"></script>
+    <script type="module">
+      import { TranslatePanel } from './assets/translate.js';
+
+      const $ = (id) => document.getElementById(id);
+      const state = { no: '', engine: 'deepseek' };
+      let panel = null;
+
+      function setStatus(text) {
+        $('status').textContent = text;
+      }
+
+      function currentNo() {
+        const fromUrl = new URL(location.href).searchParams.get('no');
+        return String(fromUrl || $('noInput').value || '1.8').trim();
+      }
+
+      function syncUrl(no) {
+        const url = new URL(location.href);
+        url.searchParams.set('no', no);
+        history.replaceState(null, '', url);
+        $('openReader').href = `reader.html?no=${encodeURIComponent(no)}`;
+      }
+
+      async function load() {
+        const no = String($('noInput').value || '').trim() || '1.8';
+        state.no = no;
+        state.engine = $('engine').value || 'deepseek';
+        syncUrl(no);
+        setStatus('载入中…');
+        try {
+          const qs = new URLSearchParams({
+            withTranslation: '1',
+            engine: state.engine,
+            tgtLang: 'zh-CN',
+          });
+          const res = await fetch(`/api/works/${encodeURIComponent(no)}/segments?${qs}`, {
+            headers: { Accept: 'application/json' },
+          });
+          if (!res.ok) {
+            let detail = '';
+            try {
+              const err = await res.json();
+              detail = (err && err.error && (err.error.message || err.error.code)) || '';
+            } catch {
+              /* 非 JSON 错误体，忽略 */
+            }
+            throw new Error(`HTTP ${res.status}${detail ? ` ${detail}` : ''}`);
+          }
+          const out = await res.json();
+          if (!panel) {
+            panel = new TranslatePanel($('dstList'), {
+              renderMode: 'layout',
+              getPageSize: () => null, // 自检页没有 PDF：按 page.aspect 估算
+              onSelect: (para) => {
+                const el = document.querySelector(`.page-para[data-segment-id="${para.segmentId}"]`);
+                if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+              },
+            });
+          }
+          panel.setMode($('dual').checked ? 'dual' : 'dst');
+          window.__previewPanel = panel; // 调试用：可在控制台注入非法 bbox / 假页验证降级
+          panel.render(out.pages || [], { pageFigures: out.pageFigures });
+          const st = panel.stats();
+          const pages = out.pages || [];
+          const forms = pages.map((p) => Number(p.width) > 0 && Number(p.height) > 0);
+          const sizeNote = forms.every(Boolean) ? 'API 尺寸' : 'aspect 估算';
+          const figCount = Object.values(out.pageFigures || {}).reduce(
+            (n, boxes) => n + (Array.isArray(boxes) ? boxes.length : 0),
+            0,
+          );
+          setStatus(
+            `work ${no} · asset ${out.assetId ?? '—'} · ${pages.length} 页 · ${st.total} 段 · 已译 ${st.done}` +
+              `${figCount ? ` · 图区 ${figCount}（占位）` : ''} · ${sizeNote}`,
+          );
+        } catch (e) {
+          setStatus(`载入失败：${e.message}`);
+          $('dstList').innerHTML = `<div class="lp-empty">载入失败：${e.message.replace(/[<>]/g, '')}</div>`;
+          panel = null;
+        }
+      }
+
+      $('lpForm').addEventListener('submit', (ev) => {
+        ev.preventDefault();
+        load();
+      });
+      $('engine').addEventListener('change', load);
+      $('renderSel').addEventListener('change', () => {
+        if (panel) panel.setRenderMode($('renderSel').value);
+      });
+      $('dual').addEventListener('change', () => {
+        if (panel) panel.setMode($('dual').checked ? 'dual' : 'dst');
+      });
+
+      $('noInput').value = currentNo();
+      load();
+    </script>
+  </body>
+</html>

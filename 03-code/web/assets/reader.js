@@ -48,8 +48,21 @@ async function boot() {
   $('btnExport').href = `/api/works/${no}/translation/export?bilingual=1`;
 
   panel = new TranslatePanel($('dstList'), {
-    onSelect: (para) => viewer.scrollToSegment(para.pageNo, para.bbox),
+    onSelect: (para) => viewer && viewer.scrollToSegment(para.pageNo, para.bbox),
+    getPageSize: (pageNo) => pageSizeFromViewer(pageNo),
+    // 版式页里的插图：把 PDF 原区域重渲染进右栏的 canvas；viewer 未就绪时退化成占位框
+    renderFigure: (pageNo, box, canvas, opts) =>
+      viewer && typeof viewer.renderRegion === 'function'
+        ? viewer.renderRegion(pageNo, box, canvas, opts)
+        : Promise.resolve(false),
   });
+  // 版式页默认「仅译文」：中英文同格上下叠会显得挤，原文在左页 PDF 里已经能看到
+  if (panel.renderMode === 'layout') {
+    state.mode = 'dst';
+    panel.setMode('dst');
+    const radio = document.querySelector('input[name="mode"][value="dst"]');
+    if (radio) radio.checked = true;
+  }
   viewer = new Viewer($('pages'), { scrollHost: $('pdfPane') });
   const savedScale = parseFloat(localStorage.getItem('agentlit.pdfScale'));
   if (savedScale && savedScale > 0) viewer.scale = savedScale;
@@ -158,7 +171,7 @@ async function loadSegments() {
     if (hadTranslation) triggerTranslate();
     return;
   }
-  panel.render(out.pages || []);
+  panel.render(out.pages || [], { pageFigures: out.pageFigures });
   const { total, done } = panel.stats();
   $('progressLine').textContent = `段落 ${total} · 已译 ${done}`;
 }
@@ -390,6 +403,24 @@ function updatePdfHud() {
 function applyZoomLabel() {
   if (viewer) $('zoomVal').textContent = `${Math.round(viewer.scale * 100)}%`;
 }
+
+/**
+ * 从 viewer 的 viewport 反推 PDF 点尺寸：viewport 是「PDF 点 × viewer.scale」。
+ * 版式页按这个尺寸决定纸的宽高比，PDF 缩放（setScale）不影响结果。
+ */
+function pageSizeFromViewer(pageNo) {
+  if (!viewer) return null;
+  // 新 viewer 直接给出 PDF 点尺寸（含 rotate），比拿 viewport 反推更准
+  if (typeof viewer.pageSizePt === 'function') {
+    const size = viewer.pageSizePt(pageNo);
+    if (size && Number.isFinite(size.width) && Number.isFinite(size.height)) return size;
+  }
+  if (!viewer.pageEls) return null;
+  const entry = viewer.pageEls.get(pageNo);
+  if (!entry || !entry.viewport) return null;
+  const scale = viewer.scale > 0 ? viewer.scale : 1;
+  return { width: entry.viewport.width / scale, height: entry.viewport.height / scale };
+}
 async function changeZoom(delta) {
   await viewer.setScale(+(viewer.scale + delta).toFixed(2));
   localStorage.setItem('agentlit.pdfScale', String(viewer.scale));
@@ -437,6 +468,8 @@ function setupFontScale() {
   const apply = () => {
     dstPane.style.setProperty('--dst-scale', String(fontScale));
     $('fontVal').textContent = `${Math.round(fontScale * 100)}%`;
+    // 版式页的字号按 --dst-scale 重算，段落高度会变，需要重排（保持阅读位置）
+    if (panel) panel.relayoutAll();
   };
   const up = () => { fontScale = Math.min(1.3, +(fontScale + 0.1).toFixed(2)); apply(); localStorage.setItem('agentlit.dstScale', String(fontScale)); };
   const down = () => { fontScale = Math.max(0.85, +(fontScale - 0.1).toFixed(2)); apply(); localStorage.setItem('agentlit.dstScale', String(fontScale)); };
@@ -552,6 +585,25 @@ function bind() {
   $('btnCancel').addEventListener('click', cancelTranslate);
   $('btnRefine').addEventListener('click', triggerRefine);
   $('btnRefineCancel').addEventListener('click', cancelRefine);
+
+  // 版式（按 bbox 还原）/ 线性（原来的段落流）切换，选择记在 localStorage
+  const renderBtn = $('btnRender');
+  if (renderBtn) {
+    const syncRenderBtn = () => {
+      const isLayout = panel.renderMode === 'layout';
+      renderBtn.textContent = isLayout ? '版式' : '线性';
+      renderBtn.setAttribute('aria-pressed', String(isLayout));
+      renderBtn.title = isLayout
+        ? '当前按原版式还原；点击切换为线性段落流'
+        : '当前为线性段落流；点击切换为按原版式还原';
+    };
+    renderBtn.addEventListener('click', () => {
+      panel.setRenderMode(panel.renderMode === 'layout' ? 'flow' : 'layout');
+      syncRenderBtn();
+    });
+    syncRenderBtn();
+  }
+
   for (const radio of document.querySelectorAll('input[name="mode"]')) {
     radio.addEventListener('change', () => {
       state.mode = radio.value;

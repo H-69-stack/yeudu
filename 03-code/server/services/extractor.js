@@ -16,13 +16,18 @@ import { createLogger } from '../logger.js';
 import { absFromRel } from './storage.js';
 import { buildPagesFromRaw } from './pdf/buildPages.js';
 import { buildVocabulary, restoreSpacesInItems } from './pdf/spaceFix.js';
+import { FIGURE_VERSION, attachCaptionAnchors, collectInkBoxes, detectPageFigures } from './pdf/figures.js';
 import { indexSegments, deleteIndexForAsset, deleteTranslationIndexForAsset } from './fts.js';
 import { buildCacheKey } from './translate/cacheKey.js';
 
 const log = createLogger('extractor');
 
-/** 抽取算法版本：S1–S7 任何语义变化都要 +1（与 pdfjs 版本共同决定段落是否可比）。 */
-export const EXTRACTOR_VERSION = 4;
+/**
+ * 抽取算法版本：S1–S7 任何语义变化都要 +1（与 pdfjs 版本共同决定段落是否可比）。
+ * v5：图注独立成 caption、子段 bbox 按字符数比例切分（不再复用块级包围盒）、
+ *     每页写 `page_figures`、payload 带每页真实宽高。
+ */
+export const EXTRACTOR_VERSION = 5;
 export const PDFJS_VERSION = '6.4.299';
 
 let pdfjsModule = null;
@@ -89,11 +94,21 @@ export async function readRawPages(absPath, opts = {}) {
       const page = await doc.getPage(i);
       const viewport = page.getViewport({ scale: 1 });
       const tc = await page.getTextContent();
+      // 图区检测需要 operator list（位图/矢量路径的变换矩阵）。它比 textContent 贵，
+      // 但失败不能影响文本抽取：拿不到就退化成「只有文字覆盖」的判据（ink=null）。
+      let ink = null;
+      try {
+        const opList = await page.getOperatorList();
+        ink = collectInkBoxes(opList, pdfjs.OPS);
+      } catch (e) {
+        ink = null;
+      }
       pages.push({
         pageNo: i,
-        width: viewport.width,
+        width: viewport.width, // 已是旋转后的可视尺寸（不要用 view[2]/view[3]）
         height: viewport.height,
         items: tc.items,
+        ink,
       });
       if (typeof page.cleanup === 'function') page.cleanup();
     }
@@ -198,6 +213,21 @@ export async function extractAsset(assetId, opts = {}) {
   const spaceSink = {};
   const spaceStats = restoreSpacesInPages(raw.pages, spaceSink);
 
+  // 每页图区（第一遍：墨迹）。必须在 buildPages 之前 —— 图注与图内标注的判定要用它。
+  const figures = new Map();
+  const figureStats = { pages: 0, inkPages: 0, pagesWithFigures: 0, boxes: 0, captionAnchors: 0 };
+  for (const page of raw.pages) {
+    let fig = { boxes: [] };
+    try {
+      fig = detectPageFigures({ width: page.width, height: page.height, items: page.items, ink: page.ink });
+    } catch (e) {
+      log.warn('extract.figures_failed', { assetId: asset.id, pageNo: page.pageNo, error: String(e && e.message) });
+    }
+    figures.set(page.pageNo, fig.boxes);
+    figureStats.pages += 1;
+    if (page.ink) figureStats.inkPages += 1;
+  }
+
   const built = buildPagesFromRaw(raw.pages, {
     paragraphChars: config.extract.paragraphChars,
     roleRules: config.extract.roleRules,
@@ -206,7 +236,20 @@ export async function extractAsset(assetId, opts = {}) {
     // item 之间的小正间隙同样会吞空格（`Layers of` + `control` 拼成 `ofcontrol`），
     // 段落成形后再用同一份词表扫一遍，把这类「跨 item 粘连」也切开。
     spaceVocab: spaceSink.vocab || null,
+    // 图区：用于把 caption / figure-label 与正文分开（见 buildPages.classifyRich）
+    pageFigures: figures,
   });
+
+  // 第二遍图区：图注反推。本库不少插图整幅由文字/符号字形画出（asset 5 p1 的 Figure 1
+  // 就是 405 个 showText，operator list 里既无位图也无路径），墨迹检测拿不到任何框，
+  // 只能靠「图注上方的空白区」补出来。
+  const anchor = attachCaptionAnchors(figures, built);
+  figureStats.captionAnchors = anchor.added;
+  for (const page of built) {
+    const boxes = figures.get(page.pageNo) || [];
+    if (boxes.length) figureStats.pagesWithFigures += 1;
+    figureStats.boxes += boxes.length;
+  }
 
   const totalPages = built.length;
   const pagesWithText = built.filter((p) => p.paras.some((x) => x.text.trim().length > 0)).length;
@@ -277,6 +320,16 @@ export async function extractAsset(assetId, opts = {}) {
       asset.id,
       inserted.filter((s) => !s.isMath && !s.isLabel).map((s) => ({ id: s.id, text: s.text })),
     );
+    // 图区：整页覆盖写（含没有图的页 —— 前端要用这里的 width/height 做真实比例排版）
+    run('DELETE FROM page_figures WHERE asset_id = ?', [asset.id]);
+    for (const page of raw.pages) {
+      const boxes = figures.get(page.pageNo) || [];
+      run(
+        `INSERT INTO page_figures(asset_id, page_no, boxes, width, height, version, updated_at)
+         VALUES(?,?,?,?,?,?,?)`,
+        [asset.id, page.pageNo, JSON.stringify(boxes), round2(page.width), round2(page.height), FIGURE_VERSION, now],
+      );
+    }
     run(
       `UPDATE assets SET extract_status='ready', extract_version=?, extract_error=NULL, page_count=?,
                          last_verified_at=?, updated_at=? WHERE id=?`,
@@ -299,6 +352,7 @@ export async function extractAsset(assetId, opts = {}) {
     avgSegmentsPerPage: totalPages ? Number((inserted.length / totalPages).toFixed(2)) : 0,
     textPageRatio: Number(textPageRatio.toFixed(3)),
     spaceFix: spaceStats,
+    figures: figureStats,
     columnStats: {
       oneColumn: built.filter((p) => p.columns === '1').length,
       twoColumn: built.filter((p) => p.columns === '2').length,
@@ -377,6 +431,19 @@ export function getSegments(assetId, { page, from, to, translation = null } = {}
     params,
   );
   const asset = get('SELECT page_count, storage_rel_path, extract_version FROM assets WHERE id = ?', [assetId]);
+  // 每页真实尺寸 + 图区（v5）。老数据还没重算时这两张表为空 → 回落到旧行为（width=null、aspect 写死），
+  // 保证接口向后兼容：老调用方不读新字段也能工作。
+  const figRows = all(
+    'SELECT page_no, boxes, width, height FROM page_figures WHERE asset_id = ? ORDER BY page_no ASC',
+    [Number(assetId)],
+  );
+  const pageSizes = new Map();
+  const pageFigures = {};
+  for (const r of figRows) {
+    pageSizes.set(r.page_no, { width: r.width, height: r.height });
+    const boxes = safeParse(r.boxes);
+    if (Array.isArray(boxes) && boxes.length) pageFigures[r.page_no] = boxes;
+  }
   const byPage = new Map();
   for (const r of rows) {
     if (!byPage.has(r.page_no)) byPage.set(r.page_no, []);
@@ -416,15 +483,30 @@ export function getSegments(assetId, { page, from, to, translation = null } = {}
   return {
     assetId: Number(assetId),
     pageCount: asset ? asset.page_count : null,
+    // 图区：`{ [pageNo]: [[x0,y0,x1,y1], ...] }`，与 segments.bbox 同一坐标口径（PDF 点、y 向上）。
+    // 老调用方忽略该字段即可（新增字段，不动既有字段语义）。
+    pageFigures,
     pages: [...byPage.entries()]
       .sort((a, b) => a[0] - b[0])
-      .map(([pageNo, paras]) => ({
-        pageNo,
-        aspect: 1 / 1.294,
-        width: null,
-        paras,
-      })),
+      .map(([pageNo, paras]) => {
+        const size = pageSizes.get(pageNo);
+        const width = size && Number(size.width) > 0 ? Number(size.width) : null;
+        const height = size && Number(size.height) > 0 ? Number(size.height) : null;
+        return {
+          pageNo,
+          // 真实页面比例（此前写死 1/1.294，对 1.19/2.6/2.3 的页面偏差 13–16%）
+          aspect: width && height ? Number((width / height).toFixed(4)) : 1 / 1.294,
+          width,
+          height,
+          paras,
+        };
+      }),
   };
+}
+
+function round2(n) {
+  const v = Number(n);
+  return Number.isFinite(v) ? Math.round(v * 100) / 100 : null;
 }
 
 function safeParse(t) {

@@ -29,7 +29,31 @@ import {
 const log = createLogger('migrate');
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
-export const TARGET_VERSION = 4;
+export const TARGET_VERSION = 5;
+
+/**
+ * v5 DDL：每页图形区域（`page_figures`）。**必须与 schema.sql 里的同名段落逐字一致**
+ * （schema.sql 是新库的唯一事实源，这里是老库的增量补丁）。
+ *
+ * 坐标口径：`boxes` 为 JSON `[[x0,y0,x1,y1], ...]`，**PDF 点、y 向上、原点在左下角**，
+ * 与 `segments.bbox` 完全一致（前端用同一个 `viewport.convertToViewportPoint` 换算）。
+ * `width`/`height` 是该页 `page.getViewport({scale:1})` 的可视尺寸（已含 rotate），
+ * 前端据此按真实页面比例排版，而不是猜一个固定 aspect。
+ */
+export const PAGE_FIGURES_DDL = `
+CREATE TABLE IF NOT EXISTS page_figures (
+  asset_id   INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  page_no    INTEGER NOT NULL,                     -- 1-based
+  boxes      TEXT    NOT NULL DEFAULT '[]',        -- JSON [[x0,y0,x1,y1],...]；PDF 点、y 向上
+  width      REAL,                                 -- 该页可视宽（pt，已含 rotate）
+  height     REAL,                                 -- 该页可视高（pt）
+  version    INTEGER NOT NULL DEFAULT 1,           -- 图区算法版本（figures.FIGURE_VERSION）
+  updated_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (asset_id, page_no)
+);
+CREATE INDEX IF NOT EXISTS idx_page_figures_asset ON page_figures(asset_id);
+`;
+
 
 function addColumnIfMissing(table, column, ddl) {
   const cols = all(`PRAGMA table_info(${table})`).map((c) => c.name);
@@ -168,6 +192,17 @@ const MIGRATIONS = [
       return added;
     },
   },
+  {
+    version: 5,
+    describe: 'page_figures（每页图形区域 + 该页真实宽高；供前端把图保留在译文页上）',
+    run() {
+      // 只建表，不回填：存量资产走 `node server/cli/recompute-layout.js`（可重入、可分批），
+      // 新抽取在 extractor 里写入。迁移里跑 14 个 PDF 的 operator list 会让升级变成分钟级长事务。
+      exec(PAGE_FIGURES_DDL);
+      log.info('migrate.v5.table', { table: 'page_figures' });
+      return { table: 'page_figures', ddl: true };
+    },
+  },
 ];
 
 /** v3 的形状自检（版本号已是 3 但列缺失时补跑） */
@@ -182,6 +217,12 @@ export function schemaNeedsV4() {
   const cols = all('PRAGMA table_info(segments)').map((c) => c.name);
   if (!cols.length) return false; // 空库：交给 schema.sql
   return !cols.includes('role') || !cols.includes('tier') || !cols.includes('align') || !cols.includes('ratio') || !cols.includes('gap_pct');
+}
+
+/** v5 的形状自检（版本号已是 5 但 page_figures 表缺失时补跑） */
+export function schemaNeedsV5() {
+  const t = all("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'page_figures'");
+  return t.length === 0 && all('PRAGMA table_info(segments)').length > 0; // 空库：交给 schema.sql
 }
 
 /** v2 的形状自检（开发期 v2 被修订过：老库可能版本号已是 2 但列不对） */
@@ -211,7 +252,8 @@ export function migrate() {
   const repairV2 = from >= 2 && schemaNeedsV2();
   const repairV3 = from >= 3 && schemaNeedsV3();
   const repairV4 = from >= 4 && schemaNeedsV4();
-  const repair = from >= TARGET_VERSION && (repairV2 || repairV3 || repairV4);
+  const repairV5 = from >= 5 && schemaNeedsV5();
+  const repair = from >= TARGET_VERSION && (repairV2 || repairV3 || repairV4 || repairV5);
   if (from >= TARGET_VERSION && !repair) {
     log.info('migrate.skip', { from, target: TARGET_VERSION });
     return { from, to: from, applied: false, backupFile: null, steps: [], report: null };
@@ -219,7 +261,13 @@ export function migrate() {
   if (repair) {
     log.warn('migrate.repair_shape', {
       from,
-      reason: repairV2 ? 'v2 结构不符，补跑 v2 及以上' : 'v3 结构不符，补跑 v3',
+      reason: repairV2
+        ? 'v2 结构不符，补跑 v2 及以上'
+        : repairV3
+          ? 'v3 结构不符，补跑 v3 及以上'
+          : repairV4
+            ? 'v4 结构不符，补跑 v4 及以上'
+            : 'v5 结构不符（page_figures 缺失），补跑 v5',
     });
   }
   let backupFile = null;
@@ -231,8 +279,8 @@ export function migrate() {
   }
 
   const steps = [];
-  // 结构不符时回退起点：v2 坏了从 v1 起跳，只有 v3 坏了从 v2 起跳
-  let current = repair ? (repairV2 ? 1 : 2) : from;
+  // 结构不符时回退起点：v2 坏了从 v1 起跳；只有 v3 坏了从 v2 起跳；v5 坏了只需从 v4 起跳
+  let current = repair ? (repairV2 ? 1 : repairV3 ? 2 : repairV4 ? 3 : 4) : from;
   let report = null;
 
   if (current === 0) {
