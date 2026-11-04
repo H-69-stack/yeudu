@@ -441,6 +441,19 @@ export class SheetPage {
 
     // 先写样式（统一批处理），再统一测量，避免「写→读→写」触发 N 次强制重排
     const plan = columnPlan(this.items, pageW);
+    // 跨两栏的整幅块（大标题、双栏下面的整幅正文）：按整页宽排，不能塞进某一栏
+    const isFullWidth = (rec) => {
+      if (!plan.two) return true;
+      const boxW = rec.bbox[2] - rec.bbox[0];
+      const cx = (rec.bbox[0] + rec.bbox[2]) / 2;
+      if (boxW > pageW * 0.52) return true;
+      return (
+        (rec.role === 'title' || rec.tier === 'h1' || rec.role === 'section') &&
+        rec.align === 'center' &&
+        boxW > pageW * 0.2 &&
+        Math.abs(cx - pageW / 2) < pageW * 0.14
+      );
+    };
     for (const rec of this.items) {
       const [x0, y0, x1, y1] = rec.bbox;
       const boxW = x1 - x0;
@@ -452,16 +465,8 @@ export class SheetPage {
       const alignCenter = rec.align === 'center';
       const cx = (x0 + x1) / 2;
       let band = plan.two ? (cx < plan.cols[1].left ? plan.cols[0] : plan.cols[1]) : plan.full;
-      // 跨页居中的大标题在两栏页里占满整个版心；缩在某一栏里会平白多折一行
-      if (
-        plan.two &&
-        (rec.role === 'title' || rec.tier === 'h1' || rec.role === 'section') &&
-        alignCenter &&
-        boxW > pageW * 0.2 &&
-        Math.abs(cx - pageW / 2) < pageW * 0.14
-      ) {
-        band = plan.full;
-      }
+      // 跨页居中的大标题、跨两栏的整幅正文在两栏页里占满整个版心
+      if (isFullWidth(rec)) band = plan.full;
       const bandW = band.right - band.left;
       const row = rowInfo(rec, this.items);
       const limitPt = Math.min(band.right, row.limit == null ? band.right : row.limit);
@@ -504,46 +509,143 @@ export class SheetPage {
       if (rec.dst) rec.dst.style.textAlign = alignLeft ? 'left' : 'center';
     }
 
-    const rows = this.items.slice();
-    for (const rec of rows) {
-      const box = rec.el.getBoundingClientRect();
-      rec.height = Math.max(1, box.height || (rec.bbox[3] - rec.bbox[1]) * k);
+    // ── 排版：按栏「顺排」+ 整页按需缩字号 ──────────────────────────────
+    // 不把每段钉死在原 bbox 的 y 上：中文比英文长 1.3–1.8 倍，钉死一定溢出，
+    // 一路下推会在纸面底部堆出大片空白、页面被撑到两倍高（这正是用户看到的毛病）。
+    // 现在保留原来的一切横向信息（栏宽、缩进、对齐、字号层级、图区占位），
+    // 只是让同一栏里的段落按阅读顺序往下排；整页放不下就整页等比缩字号。
+    for (const rec of this.items) rec.fsBase = parseFloat(rec.el.style.fontSize) || MIN_FONT_PX;
+
+    // 每段属于哪一栏：与上面算宽度时用的是同一套规则
+    for (const rec of this.items) {
+      const cx = (rec.bbox[0] + rec.bbox[2]) / 2;
+      let band = plan.two ? (cx < plan.cols[1].left ? plan.cols[0] : plan.cols[1]) : plan.full;
+      if (isFullWidth(rec)) band = plan.full;
+      rec.bandKey = !plan.two ? 'f' : band === plan.cols[0] ? 'l' : band === plan.cols[1] ? 'r' : 'f';
     }
 
-    // 自上而下放置；同一位置的多段按 ord 顺序堆叠
-    rows.sort((a, b) => a.top0 - b.top0 || (Number(a.para.ord) || 0) - (Number(b.para.ord) || 0));
-    const gap = Math.max(1.5, 3 * k);
-    const placed = [];
-    let bottom = sheetH;
-    for (const rec of rows) {
-      let top = rec.top0;
-      // 每次下推都会让 top 单调增大，循环必然终止；guard 只是防御脏数据
-      for (let guard = 0; guard < 80; guard += 1) {
-        let push = -1;
-        for (const p of placed) {
-          if (rec.left >= p.right - 1 || rec.left + rec.width <= p.left + 1) continue; // 不同栏
-          if (top >= p.bottom + gap - 0.5) continue; // 在下面，安全
-          if (top + rec.height <= p.top + 0.5) continue; // 在上面，安全
-          if (p.bottom + gap > push) push = p.bottom + gap;
-        }
-        if (push < 0) break;
-        top = push;
-      }
-      rec.el.style.top = `${top.toFixed(1)}px`;
-      placed.push({
-        left: rec.left,
-        right: rec.left + rec.width,
-        top,
-        bottom: top + rec.height,
+    const marginY = Math.max(3, 0.016 * sheetH);
+    const pageBottom = sheetH - marginY * 0.6;
+    const obstacles = [];
+    for (const fig of this.figureEls) {
+      const [x0, y0, x1, y1] = fig.box;
+      obstacles.push({
+        left: Math.max(0, x0) * k,
+        right: Math.min(pageW, x1) * k,
+        top: Math.max(0, (pageH - Math.min(y1, pageH)) * k),
+        bottom: Math.max(0, (pageH - Math.max(y0, 0)) * k),
       });
-      if (top + rec.height > bottom) bottom = top + rec.height;
     }
 
-    const grown = Math.ceil(bottom + Math.max(4, 6 * k));
-    if (grown > sheetH + 1) {
-      this.sheet.style.height = `${grown}px`;
+    const bands = { l: [], r: [], f: [] };
+    for (const rec of this.items) {
+      // 页眉/页脚这种页边元素留在原位，不参与顺排，免得被排到正文中间
+      rec.anchor = rec.role === 'header';
+      rec.heading = rec.role === 'section' || rec.role === 'title' || rec.tier === 'h1' || rec.tier === 'h2';
+      bands[rec.bandKey].push(rec);
+    }
+    for (const key of ['l', 'r', 'f']) {
+      bands[key].sort((a, b) => a.top0 - b.top0 || (Number(a.para.ord) || 0) - (Number(b.para.ord) || 0));
+    }
+
+    // 图区是障碍物：正文不能压到插图上（插图是 PDF 原图，压上去就糊了）
+    const bump = (y, rec) => {
+      let cur = y;
+      for (let guard = 0; guard < 8; guard += 1) {
+        let next = -1;
+        for (const o of obstacles) {
+          if (rec.left >= o.right - 1 || rec.left + rec.width <= o.left + 1) continue;
+          if (cur >= o.bottom - 1 || cur + rec.height <= o.top + 1) continue;
+          if (o.bottom > next) next = o.bottom;
+        }
+        if (next < 0) return cur;
+        cur = next + 1.5;
+      }
+      return cur;
+    };
+
+    // 整页宽的块（大标题、双栏下面那种整幅正文）把页切成若干「横段」；
+    // 每段里左右两栏各自顺排，段末再把整幅块接在较矮的那一栏之后。
+    const wideItems = bands.f.filter((r) => !r.anchor);
+    const segIndex = (rec) => {
+      let s = 0;
+      for (let i = 0; i < wideItems.length; i += 1) if (rec.top0 >= wideItems[i].top0 - 0.5) s = i + 1;
+      return s;
+    };
+    const colSegs = new Map();
+    for (const key of ['l', 'r']) {
+      for (const rec of bands[key]) {
+        const id = `${key}#${segIndex(rec)}`;
+        if (!colSegs.has(id)) colSegs.set(id, []);
+        colSegs.get(id).push(rec);
+      }
+    }
+
+    // 仅译文模式可以缩到 0.72 倍把整页塞满；对照模式要放两份文字，只轻度收缩
+    const minScale = this.mode === 'dst' ? 0.8 : 0.9;
+    let scaleTry = 1;
+    let tops = new Map();
+    let bottomAll = pageBottom;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      for (const rec of this.items) {
+        rec.fs = Math.max(MIN_FONT_PX, rec.fsBase * scaleTry);
+        rec.el.style.fontSize = `${rec.fs.toFixed(1)}px`;
+      }
+      for (const rec of this.items) {
+        rec.height = Math.max(1, rec.el.getBoundingClientRect().height);
+      }
+      tops = new Map();
+      for (const rec of bands.f) {
+        if (rec.anchor) tops.set(rec, clamp(rec.top0, marginY, Math.max(marginY, pageBottom - rec.height)));
+      }
+      let cursor = marginY;
+      for (let s = 0; s <= wideItems.length; s += 1) {
+        const wide = s > 0 ? wideItems[s - 1] : null;
+        if (wide) {
+          // 整页宽的块尽量留在原位；但别为了"还原原位"把纸撑高——顶到页底就往上收
+          const cap = Math.max(marginY, pageBottom - wide.height);
+          const y = bump(Math.max(cursor, Math.min(wide.top0, cap)), wide);
+          tops.set(wide, y);
+          cursor = Math.max(cursor, y + wide.height);
+        }
+        let segBottom = cursor;
+        for (const key of ['l', 'r']) {
+          const list = colSegs.get(`${key}#${s}`) || [];
+          if (!list.length) continue;
+          let prev = null;
+          for (const rec of list) {
+            const gap = prev == null ? 0 : Math.max(1.5, (rec.heading ? 1.05 : 0.42) * rec.fs);
+            const base = prev == null ? Math.max(cursor, rec.top0) : prev + gap;
+            const y = bump(base, rec);
+            tops.set(rec, y);
+            prev = y + rec.height;
+          }
+          if (prev != null) segBottom = Math.max(segBottom, prev);
+        }
+        cursor = segBottom;
+      }
+      bottomAll = cursor;
+      this.sheet.dataset.fitScale = scaleTry.toFixed(3);
+      this.sheet.dataset.fitNeed = Math.round(bottomAll - marginY) + "/" + Math.round(pageBottom - marginY);
+      if (bottomAll <= pageBottom + 1) break;
+      if (scaleTry <= minScale + 1e-6) break;
+      const room = Math.max(40, pageBottom - marginY);
+      const need = Math.max(1, bottomAll - marginY);
+      scaleTry = Math.max(minScale, scaleTry * clamp(room / need, 0.55, 0.94));
+    }
+
+    for (const rec of this.items) {
+      const t = tops.get(rec);
+      if (t != null) rec.el.style.top = `${t.toFixed(1)}px`;
+    }
+
+    // 兜底：缩到 0.5 倍还放不下才让纸面长高（正常不该发生）
+    const limit = Math.ceil(bottomAll + Math.max(4, 6 * k));
+    if (limit > sheetH + 1) {
+      this.sheet.style.height = `${limit}px`;
       this.sheet.classList.add('grown');
     } else {
+      this.sheet.style.height = `${sheetH}px`;
       this.sheet.classList.remove('grown');
     }
   }

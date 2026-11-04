@@ -749,11 +749,21 @@ export function joinContinuations(blocks, bodyFont) {
   // 把它们当结束会让跨栏半句永远拼不回去。
   const terminal = /[.!?。！？»"'”’)\]】]$/;
   const out = [];
+  const seenCols = new Set();
   for (const b of blocks) {
     const prev = out[out.length - 1];
+    const curCol = b.column || 'full';
     if (prev) {
       const pa = String(prev.text || '').trim();
       const cb = String(b.text || '').trim();
+      const prevCol = prev.column || 'full';
+      // 跨栏拼接只在「左栏最后一块 → 右栏第一块」时成立（双栏页会把半句从栏底折到下一栏栏顶）。
+      // 若目标栏里已经出现过块，说明这一块不在栏顶，拼过去就会把两栏各自的段尾粘成一段
+      // —— 粘出来的块 bbox 横跨两栏、高度只有一个行高，前端按它排就是一段通栏文字。
+      const crossCol = prevCol !== curCol && prevCol !== 'cross' && curCol !== 'cross' && prevCol !== 'full' && curCol !== 'full';
+      // 跨栏一律不拼：拼出来的块 bbox 会横跨两栏、且高度只有一个行高，前端会把它排成一段通栏文字。
+      // 分栏折行的半句就留在各自栏里，翻译时按片段处理即可。
+      const colOk = !crossCol;
       const unfinished = pa.length >= 30 && !terminal.test(pa);
       const hyphenated = /[A-Za-z]-$/.test(pa);
       const contStart = /^[a-z(,;]/.test(cb);
@@ -767,19 +777,22 @@ export function joinContinuations(blocks, bodyFont) {
         !allCaps &&
         Math.abs(prev.fontSize - b.fontSize) <= Math.max(1.5, 0.08 * Math.max(prev.fontSize, b.fontSize)) &&
         (contStart || (hyphenated && /^[a-zA-Z]/.test(cb)));
-      const ok = unfinished && (titleJoin || bodyJoin);
+      const ok = unfinished && colOk && (titleJoin || bodyJoin);
       if (ok) {
         // 连字符断词直接去连字符（"so-" + "lution" → "solution"），其余用空格拼
         const glue = hyphenated && /^[a-zA-Z]/.test(cb) ? '' : ' ';
         prev.text = `${pa.replace(/-$/, '')}${glue}${cb}`;
         prev.x0 = Math.min(prev.x0, b.x0);
         prev.x1 = Math.max(prev.x1, b.x1);
+        prev.yTop = Math.max(prev.yTop, b.yTop);
+        prev.yBottom = Math.min(prev.yBottom, b.yBottom);
         prev.fontSize = Math.max(prev.fontSize, b.fontSize);
         prev.joined = (prev.joined || 0) + 1;
         // eslint-disable-next-line no-continue
         continue;
       }
     }
+    seenCols.add(curCol);
     out.push({ ...b });
   }
   return out;
@@ -1046,12 +1059,23 @@ export function buildPagesFromRaw(rawPages, opts = {}) {
   if (docSplitX != null) {
     for (const p of prelim) {
       if (p.col.columns === 2) continue;
+      // 图重的页（一栏大半被插图占住）侧行很少，默认阈值判不出栏；这类页的栏缝往往也不在文档 median 位置上
+      // （实测 1.11 p9：本页栏缝 325.3，文档 median 300.72），沿用 median 切不干净、会把两栏同一基线的行拼成一句。
+      // 所以先用放宽阈值按本页自己的直方图再判一次，判出来就用本页的 splitX/gap。
+      const loose = detectColumns(p.lines, p.raw.width, { minSideShare: 0.25, maxCrossShare: 0.45 });
+      if (loose.columns === 2 && loose.splitX != null) {
+        p.col = { ...loose, evidence: { ...loose.evidence, strategy: 'relaxed-page' } };
+        continue;
+      }
       const left = p.lines.filter((l) => l.x1 <= docSplitX + 1);
       const right = p.lines.filter((l) => l.x0 >= docSplitX - 1);
       const leftChars = left.reduce((a, l) => a + l.text.length, 0);
       const rightChars = right.reduce((a, l) => a + l.text.length, 0);
       const share = Math.min(left.length, right.length) / (left.length + right.length || 1);
-      if (left.length >= 3 && right.length >= 3 && share >= 0.3 && leftChars > 0 && rightChars > 0) {
+      // 图重的页（一栏大半被插图占住）只剩个位数的行在那一侧，share 会低到 0.15 上下；
+      // 这类页若沿用「单栏」就会把左右两栏同一基线的行拼成一句（产出跨两栏的烂段），
+      // 因此两侧各有 3 行就沿用文档 splitX。
+      if (left.length >= 3 && right.length >= 3 && share >= 0.12 && leftChars > 0 && rightChars > 0) {
         p.col = {
           columns: 2,
           splitX: docSplitX,

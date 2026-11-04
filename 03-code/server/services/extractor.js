@@ -27,7 +27,7 @@ const log = createLogger('extractor');
  * v5：图注独立成 caption、子段 bbox 按字符数比例切分（不再复用块级包围盒）、
  *     每页写 `page_figures`、payload 带每页真实宽高。
  */
-export const EXTRACTOR_VERSION = 6;
+export const EXTRACTOR_VERSION = 11;
 export const PDFJS_VERSION = '6.4.299';
 
 let pdfjsModule = null;
