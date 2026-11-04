@@ -360,7 +360,7 @@ export class SheetPage {
         continue;
       }
       // 图里的文字（示意图标签、图内正文）已经随插图一起画出来了，跳过，避免叠字
-      if (para.role === 'figure' || insideFigure(box, this.figures)) {
+      if ((para.role === 'figure' || para.role === 'figure-label') || insideFigure(box, this.figures)) {
         this.skipped += 1;
         continue;
       }
@@ -492,8 +492,10 @@ export class SheetPage {
       }
 
       let fs = clamp(basePt * r * k * scale, MIN_FONT_PX, MAX_FONT_PX);
+      // 只有标题/章节名允许居中；正文即使 bbox 居中（被误判的块常见）也强制左对齐
+      if (rec.role !== 'title' && rec.role !== 'section' && rec.tier !== 'h1' && rec.tier !== 'h2') alignLeft = true;
       // 单行标题字号不得明显超过自己的 bbox 高度，否则行高会盖住下一段
-      if (single && (rec.role === 'title' || rec.tier === 'h1')) {
+      if (rec.role === 'title' || rec.tier === 'h1') {
         fs = Math.min(fs, Math.max(10, boxH * k * 1.05));
       }
       rec.left = left;
@@ -503,10 +505,29 @@ export class SheetPage {
       rec.el.style.left = `${left.toFixed(1)}px`;
       rec.el.style.width = `${width.toFixed(1)}px`;
       rec.el.style.top = `${rec.top0.toFixed(1)}px`;
+      rec.fs = fs;
       rec.el.style.fontSize = `${fs.toFixed(1)}px`;
       rec.el.style.lineHeight = String(rec.lineHeight);
       rec.el.style.textAlign = alignLeft ? 'left' : 'center';
       if (rec.dst) rec.dst.style.textAlign = alignLeft ? 'left' : 'center';
+    }
+
+    // ── 页面内字号归一 ────────────────────────────────────────────────
+    // bbox 的 ratio 是按块内主导字号估的；含公式/斜体的块会被估大（1.11 第 8 页那条
+    // "robot actually turns through angle a + 601…" 就是这么被排成 2 倍大字的）。
+    // 用本页正文中位数给各角色封顶，异常块就回到正常大小。
+    const bodies = this.items.filter((r) => r.role === 'body' && r.fs > 0).map((r) => r.fs).sort((a, b) => a - b);
+    if (bodies.length >= 3) {
+      const med = bodies[Math.floor(bodies.length / 2)];
+      const LIMIT = { title: 3.2, section: 2.1, caption: 1.25, reference: 1.3, footnote: 1.25, 'figure-label': 1.25 };
+      for (const rec of this.items) {
+        const lim = LIMIT[rec.role] || 1.2;
+        const cap = med * lim;
+        if (rec.fs > cap) {
+          rec.fs = cap;
+          rec.el.style.fontSize = `${cap.toFixed(1)}px`;
+        }
+      }
     }
 
     // ── 排版：按栏「顺排」+ 整页按需缩字号 ──────────────────────────────
@@ -528,7 +549,7 @@ export class SheetPage {
     const pageBottom = sheetH - marginY * 0.6;
     const obstacles = [];
     for (const fig of this.figureEls) {
-      const [x0, y0, x1, y1] = fig.box;
+      const [x0, y0, x1, y1] = this._insetBox(fig.box);
       obstacles.push({
         left: Math.max(0, x0) * k,
         right: Math.min(pageW, x1) * k,
@@ -583,10 +604,26 @@ export class SheetPage {
 
     // 仅译文模式可以缩到 0.72 倍把整页塞满；对照模式要放两份文字，只轻度收缩
     const minScale = this.mode === 'dst' ? 0.8 : 0.9;
+    // 已落位的矩形（图区 + 已排的段落）。段落之间也做「相交就下推」，
+    // 否则两栏各自从同一 cursor 起排时，长的那一栏会压到短的一栏刚放下的整幅块上。
+    let placed = [];
+    const rectOf = (rec, y) => ({ left: rec.left, right: rec.left + rec.width, top: y, bottom: y + rec.height });
+    const hitRect = (a, b) => a.left < b.right - 0.5 && a.right > b.left + 0.5 && a.top < b.bottom - 0.5 && a.bottom > b.top + 0.5;
+    const bumpAny = (y, rec) => {
+      let t = y;
+      for (let i = 0; i < 60; i += 1) {
+        const r = rectOf(rec, t);
+        const hit = placed.find((q) => hitRect(r, q));
+        if (!hit) return t;
+        t = hit.bottom + 1.5;
+      }
+      return t;
+    };
     let scaleTry = 1;
     let tops = new Map();
     let bottomAll = pageBottom;
     for (let attempt = 0; attempt < 6; attempt += 1) {
+      placed = obstacles.slice();
       for (const rec of this.items) {
         rec.fs = Math.max(MIN_FONT_PX, rec.fsBase * scaleTry);
         rec.el.style.fontSize = `${rec.fs.toFixed(1)}px`;
@@ -595,17 +632,23 @@ export class SheetPage {
         rec.height = Math.max(1, rec.el.getBoundingClientRect().height);
       }
       tops = new Map();
-      for (const rec of bands.f) {
-        if (rec.anchor) tops.set(rec, clamp(rec.top0, marginY, Math.max(marginY, pageBottom - rec.height)));
-      }
+      // 页眉是钉在原位的；正文从页眉下面起排，否则会直接压在页眉上（p2 实测重叠就是这么来的）
       let cursor = marginY;
+      for (const rec of bands.f) {
+        if (!rec.anchor) continue;
+        const y0 = clamp(rec.top0, marginY, Math.max(marginY, pageBottom - rec.height));
+        tops.set(rec, y0);
+        placed.push(rectOf(rec, y0));
+        cursor = Math.max(cursor, y0 + rec.height + 2);
+      }
       for (let s = 0; s <= wideItems.length; s += 1) {
         const wide = s > 0 ? wideItems[s - 1] : null;
         if (wide) {
           // 整页宽的块尽量留在原位；但别为了"还原原位"把纸撑高——顶到页底就往上收
           const cap = Math.max(marginY, pageBottom - wide.height);
-          const y = bump(Math.max(cursor, Math.min(wide.top0, cap)), wide);
+          const y = bumpAny(cursor, wide);
           tops.set(wide, y);
+          placed.push(rectOf(wide, y));
           cursor = Math.max(cursor, y + wide.height);
         }
         let segBottom = cursor;
@@ -615,9 +658,10 @@ export class SheetPage {
           let prev = null;
           for (const rec of list) {
             const gap = prev == null ? 0 : Math.max(1.5, (rec.heading ? 1.05 : 0.42) * rec.fs);
-            const base = prev == null ? Math.max(cursor, rec.top0) : prev + gap;
-            const y = bump(base, rec);
+            const base = prev == null ? cursor : prev + gap;
+            const y = bumpAny(base, rec);
             tops.set(rec, y);
+            placed.push(rectOf(rec, y));
             prev = y + rec.height;
           }
           if (prev != null) segBottom = Math.max(segBottom, prev);
@@ -658,10 +702,22 @@ export class SheetPage {
 
   /* ── 插图 ─────────────────────────────────────────────────── */
 
+  /**
+   * 图框内缩 1.2pt 再取样。
+   * 图框是由标注/墨迹推出来的，右边界常常紧贴（甚至压进）正文栏 1~3pt；
+   * 直接把整块区域渲染成 canvas，会把旁边正文那一列字母的头一两个字也画进来
+   * （1.11 第 9 页右侧那串竖排孤立字母就是这么来的）。内缩之后只取图本身。
+   */
+  _insetBox(box) {
+    const p = 1.2;
+    const b = [box[0] + p, box[1] + p, box[2] - p, box[3] - p];
+    return (b[2] - b[0] > 2 && b[3] - b[1] > 2) ? b : box;
+  }
+
   _layoutFigures(k, pageW, pageH) {
     if (!this.figureEls.length) return;
     for (const fig of this.figureEls) {
-      const [x0, y0, x1, y1] = fig.box;
+      const [x0, y0, x1, y1] = this._insetBox(fig.box);
       const left = Math.max(0, Math.min(x0, pageW - 1)) * k;
       const right = Math.max(left + 1, Math.min(x1, pageW) * k);
       // PDF 的 y 向上：区域上边界 y1 对应纸上的 (pageH - y1)
@@ -694,7 +750,7 @@ export class SheetPage {
       fig.rendering = true;
       const token = ++fig.token;
       // renderRegion 内部自己乘 devicePixelRatio；这里只传「CSS 像素 / PDF 点」的比例
-      Promise.resolve(this.onRenderFigure(this.page.pageNo, fig.box, fig.canvas, { scale: k }))
+      Promise.resolve(this.onRenderFigure(this.page.pageNo, this._insetBox(fig.box), fig.canvas, { scale: k }))
         .then((ok) => {
           if (token !== fig.token) return;
           fig.rendered = ok !== false;

@@ -16,7 +16,7 @@ import { createLogger } from '../logger.js';
 import { absFromRel } from './storage.js';
 import { buildPagesFromRaw } from './pdf/buildPages.js';
 import { buildVocabulary, restoreSpacesInItems } from './pdf/spaceFix.js';
-import { FIGURE_VERSION, attachCaptionAnchors, attachLabelClusters, markFigureSegments, collectInkBoxes, detectPageFigures } from './pdf/figures.js';
+import { FIGURE_VERSION, attachCaptionAnchors, attachLabelClusters, markFigureSegments, growBoxesOverLabels, boxUncoveredLabels, collectInkBoxes, detectPageFigures } from './pdf/figures.js';
 import { indexSegments, deleteIndexForAsset, deleteTranslationIndexForAsset } from './fts.js';
 import { buildCacheKey } from './translate/cacheKey.js';
 
@@ -27,7 +27,7 @@ const log = createLogger('extractor');
  * v5：图注独立成 caption、子段 bbox 按字符数比例切分（不再复用块级包围盒）、
  *     每页写 `page_figures`、payload 带每页真实宽高。
  */
-export const EXTRACTOR_VERSION = 11;
+export const EXTRACTOR_VERSION = 15;
 export const PDFJS_VERSION = '6.4.299';
 
 let pdfjsModule = null;
@@ -255,6 +255,10 @@ export async function extractAsset(assetId, opts = {}) {
     figureStats.boxes += boxes.length;
   }
   // 图框内的段改判 role='figure'：不送翻、不渲染文字，图区整块以 PDF 原图贴回。
+  const grown = growBoxesOverLabels(figures, built);
+  const uncovered = boxUncoveredLabels(figures, built);
+  figureStats.labelUnion = uncovered.added;
+  figureStats.labelGrown = grown.grown;
   const figMark = markFigureSegments(figures, built);
   figureStats.figureSegments = figMark.marked;
 

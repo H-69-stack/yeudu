@@ -1163,6 +1163,15 @@ export function buildPagesFromRaw(rawPages, opts = {}) {
     }
     // 兜底：跨块的 bbox 完全重合（两段文本来自不同块却落在同一区域）也拆开
     dedupeBBoxes(paras);
+    // 长句 / 续行被误判成 title（1.11 第 8 页那条 "robot actually turns through angle a + 601…"
+    // 一百多字、还以逗号结尾）：标题不会长这样，统一降回正文，否则前端会把它排成加粗居中大字。
+    for (const p of paras) {
+      if (p.role !== 'title') continue;
+      if (p.text.length > 60 || /[,;，；、]$/.test(p.text)) {
+        p.role = 'body';
+        if (p.tier === 'h1') p.tier = 'body';
+      }
+    }
     out.push({
       pageNo: raw.pageNo,
       width: round(raw.width),

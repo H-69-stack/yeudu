@@ -753,6 +753,110 @@ function absorbFigureEdge(boxes, paras, o) {
  * @param {Array<{pageNo:number,paras:Array}>} pages
  * @returns {{marked:number, pages:number}}
  */
+/**
+ * 标注很多的页面（示意图/流程图）用一条兜底规则：把本页所有 figure-label 与已有框并成一个大框。
+ * 1.11 第 7 页的 Fig.7 就是这种——标注之间有 30~50pt 的白，靠 pad 连不起来，
+ * 不并框就会剩下「无框可依的标注」，前端只能把它们当段落排（巨大中文的来源）。
+ * 保护条件：并集面积不超过页面积 60%，且不能把任何 body/caption/reference 段圈进一半以上。
+ */
+/**
+ * 兜底：把「没被任何框罩住」的 figure-label 聚成新框。
+ * 1.11 第 7 页 Fig.7 的标注之间隔着 30~50pt 的空白，pad 连不起来，只看已有框就会剩一堆无框标注，
+ * 前端只能把它们当正文排（页面上那几个巨大中文就是这么来的）。
+ * 保护条件：至少要 minLabels 个游离标注、并集不超过页面积 50%、且不能把 body/caption/reference 圈进 40% 以上。
+ */
+export function boxUncoveredLabels(figuresByPage, pages, opts = {}) {
+  const minLabels = Number(opts.minLabels) > 0 ? Number(opts.minLabels) : 6;
+  const maxAreaFrac = Number(opts.maxAreaFrac) > 0 ? Number(opts.maxAreaFrac) : 0.5;
+  let added = 0;
+  for (const page of pages || []) {
+    const boxes = figuresByPage.get(page.pageNo) || [];
+    const paras = page.paras || [];
+    const free = [];
+    for (const p of paras) {
+      if (p.role !== 'figure-label' || !Array.isArray(p.bbox)) continue;
+      const a = areaOf(p.bbox);
+      if (a <= 0) continue;
+      const covered = boxes.some((b) => areaOf(intersect(p.bbox, b)) > 0.5 * a);
+      if (!covered) free.push(p);
+    }
+    if (free.length < minLabels) continue;
+    let u = free[0].bbox.slice();
+    for (const p of free) {
+      const q = p.bbox;
+      u = [Math.min(u[0], q[0]), Math.min(u[1], q[1]), Math.max(u[2], q[2]), Math.max(u[3], q[3])];
+    }
+    u = [u[0] - 4, u[1] - 4, u[2] + 4, u[3] + 4];
+    const pageArea = (Number(page.width) || 612) * (Number(page.height) || 792);
+    if (areaOf(u) > pageArea * maxAreaFrac) continue;
+    let bad = false;
+    for (const p of paras) {
+      if (p.role !== 'body' && p.role !== 'caption' && p.role !== 'reference') continue;
+      if (!Array.isArray(p.bbox)) continue;
+      const a = areaOf(p.bbox);
+      if (a > 0 && areaOf(intersect(p.bbox, u)) > 0.4 * a) { bad = true; break; }
+    }
+    if (bad) continue;
+    boxes.push(u);
+    added += 1;
+  }
+  return { added };
+}
+
+/**
+ * 按「标注连通」把图框长满整张图。
+ * 矢量图里的文字标注（figure-label/figure，以及被误判成 title/section 的短文本）彼此相邻，
+ * 但直方图/聚簇法只会框住其中一段，剩下的标注就成了「无框可依的短文字」，前端只能当段落渲染
+ * （1.11 第 7 页 Fig.7 出现巨大中文就是这个）。这里从已有框出发，反复把与框外扩 pad 相交的
+ * 标注并进框，直到不再变化。图注（caption）故意不并：真图注在框外，并进来会被原图盖住。
+ */
+export function growBoxesOverLabels(figuresByPage, pages, opts = {}) {
+  const pad = Number(opts.pad) > 0 ? Number(opts.pad) : 10;
+  const maxRounds = Number(opts.maxRounds) > 0 ? Number(opts.maxRounds) : 12;
+  const shortLen = Number(opts.shortLen) > 0 ? Number(opts.shortLen) : 40;
+  const shortH = Number(opts.shortH) > 0 ? Number(opts.shortH) : 60;
+  const ROLES = new Set(['figure-label', 'figure', 'equation', 'title', 'section', 'quote']);
+  const LOOSE = new Set(['title', 'section', 'quote']);
+  let grown = 0;
+  for (const page of pages || []) {
+    const boxes = figuresByPage.get(page.pageNo) || [];
+    if (!boxes.length) continue;
+    const cands = [];
+    for (const p of page.paras || []) {
+      if (!Array.isArray(p.bbox)) continue;
+      if (!ROLES.has(p.role)) continue;
+      if (LOOSE.has(p.role)) {
+        const t = String(p.text || '');
+        if (t.length > shortLen) continue;
+        if (p.bbox[3] - p.bbox[1] > shortH) continue;
+      }
+      cands.push(p);
+    }
+    if (!cands.length) continue;
+    const before = boxes.map((b) => b.join(',')).join('|');
+    for (let round = 0; round < maxRounds; round += 1) {
+      let changed = false;
+      for (let i = 0; i < boxes.length; i += 1) {
+        let b = boxes[i];
+        for (const p of cands) {
+          const pb = p.bbox;
+          if (areaOf(intersect(pb, b)) > 0) continue;
+          const near = pb[0] <= b[2] + pad && pb[2] >= b[0] - pad
+            && pb[1] <= b[3] + pad && pb[3] >= b[1] - pad;
+          if (!near) continue;
+          b = [Math.min(b[0], pb[0]), Math.min(b[1], pb[1]), Math.max(b[2], pb[2]), Math.max(b[3], pb[3])];
+          changed = true;
+        }
+        boxes[i] = b;
+      }
+      if (!changed) break;
+    }
+    const after = boxes.map((b) => b.join(',')).join('|');
+    if (after !== before) grown += 1;
+  }
+  return { grown };
+}
+
 export function markFigureSegments(figuresByPage, pages) {
   let marked = 0;
   let touched = 0;
@@ -768,7 +872,10 @@ export function markFigureSegments(figuresByPage, pages) {
       // 真正的图注一定在框外（框底/框顶已按图注裁过）。落在框**里面**的 caption 是
       // 分类器把图内文字（"i>=NumInst"、"Sequential simulation"）误判成了图注，
       // 所以这里对 caption 用更严的 90% 门槛，其余角色 80%。
-      const frac = p.role === 'caption' ? 0.9 : 0.8;
+      // 被混成 title/section 的图内文字（1.11 p7 的 "-stereo - travel" 与 "I busy"）也要收：
+      // 它们是最容易被渲染成巨大中文的一类，门槛放到 70%。
+      const loose = p.role === 'title' || p.role === 'section' || p.role === 'quote' || p.role === 'equation';
+      const frac = p.role === 'caption' ? 0.9 : (loose ? 0.7 : 0.8);
       for (const b of boxes) {
         const inter = areaOf(intersect(p.bbox, b));
         if (inter < frac * a) continue;
