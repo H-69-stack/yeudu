@@ -24,6 +24,7 @@
 
 /** 永不送翻的角色（pipeline 的 SQL 与巡检共用） */
 export const NEVER_TRANSLATE_ROLES = Object.freeze([
+  'figure',       // 落进图框的段：图区整块以 PDF 原图贴回，框内文字既不译也不再排版
   'figure-label', // 图内文字/图例/坐标轴：符号碎片，没有可译语义；误翻即上面 A 类垃圾
   'header',       // 页眉：跨页重复的栏目信息，模型半翻半留
   'footer',       // 页脚：同上（页码、期刊名）

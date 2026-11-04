@@ -360,7 +360,7 @@ export class SheetPage {
         continue;
       }
       // 图里的文字（示意图标签、图内正文）已经随插图一起画出来了，跳过，避免叠字
-      if (insideFigure(box, this.figures)) {
+      if (para.role === 'figure' || insideFigure(box, this.figures)) {
         this.skipped += 1;
         continue;
       }

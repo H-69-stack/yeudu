@@ -552,6 +552,239 @@ export function attachCaptionAnchors(figuresByPage, pages, opts = {}) {
 }
 
 /**
+ * 用「图内标注聚簇」反推图区（第三遍）。
+ *
+ * 为什么还需要这一遍：`attachCaptionAnchors` 靠「图注与同栏最近文字之间的空白 ≥60pt」成立。
+ * 但示意图/状态图/结构图这类**整幅由文字画出来**的插图，标注会一直压到图注边上：
+ * asset 4（work 1.8）第 9 页的 Fig. 6 状态转换图，标注最低一行 y3=608 与图注顶边 612 只差
+ * 4pt、最高一行 y0=740 与上方小节标题 640 只差 17pt，两侧都够不着 60pt ⇒ 一个框都造不出来，
+ * 图内文字全被当成正文送去翻译（用户看到的就是「READY--PROCESSOR」被翻成中文碎片）。
+ *
+ * 规则（确定性，不依赖空白）：
+ *  - 取同页 `role='figure-label'` 的段，按外扩 `pad` 后是否相交做连通聚簇；
+ *  - 簇成员 ≥ minMembers 且并集面积 ≥ minAreaPct 页面积 → 候选框（并集再向四周扩 grow）；
+ *  - 接受条件：簇的上/下 `captionNear` 内存在 `role='caption'` 的段，**或**成员 ≥
+ *    minMembersNoCaption（图注被判丢时靠密度兜底）；
+ *  - 新框并入该页候选框后重新合并重叠框。
+ *
+ * @param {Map<number, number[][]>} figuresByPage 前两遍结果，会被就地补全
+ * @param {Array<{pageNo:number,width:number,height:number,paras:Array}>} pages
+ * @param {Object} [opts]
+ * @returns {{added:number, pages:number}}
+ */
+export function attachLabelClusters(figuresByPage, pages, opts = {}) {
+  const o = {
+    pad: 12,
+    grow: 6,
+    minMembers: 3,
+    minMembersNoCaption: 5,
+    minAreaPct: 0.5,
+    captionNear: 45,
+    gapTol: 14,
+    overlapFrac: 0.4,
+    edgeTol: 26,
+    ...opts,
+  };
+  let added = 0;
+  let touched = 0;
+  for (const page of pages || []) {
+    const w = Number(page.width) || 0;
+    const h = Number(page.height) || 0;
+    if (!w || !h) continue;
+    const paras = (page.paras || []).filter((p) => Array.isArray(p.bbox));
+    const labels = paras.filter((p) => p.role === 'figure-label');
+    if (labels.length < o.minMembers) continue;
+    // 连通分量（并查集）：两两判断外扩后是否相交
+    const parent = labels.map((_, i) => i);
+    const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+    for (let i = 0; i < labels.length; i += 1) {
+      for (let j = i + 1; j < labels.length; j += 1) {
+        const a = expandBox(labels[i].bbox, o.pad, o.pad);
+        if (!intersects(a, labels[j].bbox)) continue;
+        const ra = find(i);
+        const rb = find(j);
+        if (ra !== rb) parent[rb] = ra;
+      }
+    }
+    const groups = new Map();
+    for (let i = 0; i < labels.length; i += 1) {
+      const r = find(i);
+      if (!groups.has(r)) groups.set(r, []);
+      groups.get(r).push(labels[i]);
+    }
+    const boxes = (figuresByPage.get(page.pageNo) || []).map((b) => [...b]);
+    const captions = paras.filter((p) => p.role === 'caption');
+    let localAdded = 0;
+    for (const members of groups.values()) {
+      if (members.length < o.minMembers) continue;
+      let box = members.reduce((acc, p) => union(acc, p.bbox), [...members[0].bbox]);
+      box = expandBox(box, o.grow, o.grow);
+      box = [Math.max(0, box[0]), Math.max(0, box[1]), Math.min(w, box[2]), Math.min(h, box[3])];
+      if (areaOf(box) < (o.minAreaPct / 100) * w * h) continue;
+      // 已经基本被现有框覆盖的簇不再造框
+      if (boxes.some((b) => areaOf(intersect(b, box)) > 0.8 * areaOf(box))) continue;
+      const nearCaption = captions.some((c) => {
+        const cb = c.bbox;
+        const horizontal = Math.min(box[2], cb[2]) - Math.max(box[0], cb[0]);
+        if (horizontal < 0.3 * Math.max(1, Math.min(box[2] - box[0], cb[2] - cb[0]))) return false;
+        return cb[1] - box[3] <= o.captionNear && box[1] - cb[3] <= o.captionNear;
+      });
+      if (!nearCaption && members.length < o.minMembersNoCaption) continue;
+      boxes.push(box);
+      localAdded += 1;
+      added += 1;
+    }
+    if (localAdded) {
+      // 一张图常被图内线条切成上下几块标注簇（asset 4 p9 的 Fig. 6 就是 6+4 两块），
+      // 先按"竖直相邻且横向大部分重叠"合并成一框，再把紧贴框顶的图内文字吸进来
+      // （否则那行 y 落在簇顶之上，标不成 figure、仍会被翻译）。
+      const joined = absorbFigureEdge(mergeAdjacentBoxes(boxes, o, captions), paras, o);
+      const merged = mergeOverlapping(joined);
+      merged.sort((a, b) => b[3] - a[3] || a[0] - b[0]);
+      figuresByPage.set(
+        page.pageNo,
+        merged.slice(0, FIGURE_DEFAULTS.maxBoxes).map((b) => [round(b[0]), round(b[1]), round(b[2]), round(b[3])]),
+      );
+      touched += 1;
+    }
+  }
+  return { added, pages: touched };
+}
+
+/** 竖直相邻（gap ≤ gapTol）且横向重叠 ≥ overlapFrac 的框合并成一个（被图内线条切开的同一张图） */
+function mergeAdjacentBoxes(boxes, o, captions = []) {
+  const spanInterrupted = (a, b) => {
+    const lo = Math.min(a[1], b[1]);
+    const hi = Math.max(a[3], b[3]);
+    return captions.some((c) => {
+      const cb = c.bbox;
+      const ox = Math.min(Math.max(a[2], b[2]), cb[2]) - Math.max(Math.min(a[0], b[0]), cb[0]);
+      if (ox < 0.2 * Math.max(1, Math.min(cb[2] - cb[0], Math.max(a[2] - a[0], b[2] - b[0])))) return false;
+      return cb[1] <= hi + 2 && cb[3] >= lo - 2;
+    });
+  };
+  const list = boxes.map((b) => [...b]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < list.length && !changed; i += 1) {
+      for (let j = i + 1; j < list.length; j += 1) {
+        const a = list[i];
+        const b = list[j];
+        const ox = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
+        const frac = ox / Math.max(1, Math.min(a[2] - a[0], b[2] - b[0]));
+        const gap = a[1] >= b[3] ? a[1] - b[3] : b[1] - a[3];
+        if (frac < o.overlapFrac || gap > o.gapTol) continue;
+        if (spanInterrupted(a, b)) continue; // 两张图之间夹着图注：不能并成一块，否则图注被图盖住
+        list[i] = union(a, b);
+        list.splice(j, 1);
+        changed = true;
+        break;
+      }
+    }
+  }
+  return list;
+}
+
+/**
+ * 把紧贴框顶/框底的图内文字吸进框里。
+ *
+ * 只吸「图内可能出现的角色」（figure-label / section / footnote / equation / quote）——
+ * 这一条是给 asset 4 p9 那种"图顶那一行被判成小节标题"的情形用的（`IN _P- RECEIVE AWARD`
+ * 被判成 section，y 比标注簇还高一截）。绝不吸 body/header/title/reference/caption：
+ * 吸进正文会吞掉一段真文字，吸进图注会让图注不再翻译。
+ */
+function absorbFigureEdge(boxes, paras, o) {
+  const EDGE_ROLES = new Set(['figure-label', 'section', 'footnote', 'equation', 'quote']);
+  const captions = paras.filter((p) => p.role === 'caption');
+  return boxes.map((b) => {
+    const box = [...b];
+    // 上方若有图注（同栏、且在图框顶边之上），它就是天花板：再往上就是上一张图了。
+    // 少了这一条，asset 4 p9 的 Fig. 7 框会顺着"图内标注"一路爬过图注，把 Fig. 6 也吞进来。
+    let ceiling = Infinity;
+    for (const c of captions) {
+      const cb = c.bbox;
+      const ox = Math.min(box[2], cb[2]) - Math.max(box[0], cb[0]);
+      if (ox < 0.2 * Math.max(1, Math.min(box[2] - box[0], cb[2] - cb[0]))) continue;
+      if (cb[1] < box[3] - 2) continue;
+      if (cb[1] - 2 < ceiling) ceiling = cb[1] - 2;
+    }
+    for (let guard = 0; guard < 8; guard += 1) {
+      let reached = null;
+      for (const p of paras) {
+        if (!EDGE_ROLES.has(p.role)) continue;
+        const pb = p.bbox;
+        if (pb[1] < box[3] - 1) continue;         // 不在框上方
+        if (pb[1] - box[3] > o.edgeTol) continue; // 离得太远，不是图的一部分
+        if (pb[3] > ceiling) continue;            // 已越过图注，属于上一张图
+        const ox = Math.min(box[2], pb[2]) - Math.max(box[0], pb[0]);
+        if (ox < 0.2 * Math.max(1, Math.min(box[2] - box[0], pb[2] - pb[0]))) continue;
+        if (pb[0] < box[0]) box[0] = pb[0];
+        if (pb[2] > box[2]) box[2] = pb[2];
+        if (reached == null || pb[3] > reached) reached = pb[3];
+      }
+      if (reached == null || reached + 2 <= box[3]) break;
+      box[3] = reached + 2;
+    }
+    // 图注绝不能落进图框：图框最后会被原图整块盖上去，图注被盖住就不翻译了。
+    // 图注贴在框底（IEEE 老论文「图在上、图注在下」）时，把框底抬到图注上沿之上 2pt。
+    for (const c of captions) {
+      const cb = c.bbox;
+      const ox = Math.min(box[2], cb[2]) - Math.max(box[0], cb[0]);
+      if (ox < 0.2 * Math.max(1, Math.min(box[2] - box[0], cb[2] - cb[0]))) continue;
+      if (cb[3] + 2 > box[1] && cb[3] + 2 - box[1] <= 24) box[1] = cb[3] + 2;
+    }
+    return box;
+  });
+}
+
+/**
+ * 把落进图框里的段落标成 `role='figure'`。
+ *
+ * 目的：图区最终是以 **PDF 原图** 贴回版面的（前端 `renderRegion`），框内文字不需要、也不应该
+ * 再翻译或再排一遍。但这些字的原始 role 往往是 body/section/footnote（asset 4 p9 的
+ * `IN _P- RECEIVE AWARD` 被判成 section、`+ r WAIT FOR TASK REPORT` 被判成 footnote），
+ * 只靠 `figure-label` 白名单挡不住，所以在抽取阶段就统一改写角色。
+ *
+ * 判定：段落 bbox 有 ≥80% 面积落在某个图框内，且原角色不是 `caption`（图注要翻译）。
+ * 原角色保留在 `prevRole` 字段里，便于回溯。
+ *
+ * @param {Map<number, number[][]>} figuresByPage 已定稿的图框
+ * @param {Array<{pageNo:number,paras:Array}>} pages
+ * @returns {{marked:number, pages:number}}
+ */
+export function markFigureSegments(figuresByPage, pages) {
+  let marked = 0;
+  let touched = 0;
+  for (const page of pages || []) {
+    const boxes = figuresByPage.get(page.pageNo) || [];
+    if (!boxes.length) continue;
+    let local = 0;
+    for (const p of page.paras || []) {
+      if (!Array.isArray(p.bbox)) continue;
+      if (p.role === 'figure') continue;
+      const a = areaOf(p.bbox);
+      if (a <= 0) continue;
+      // 真正的图注一定在框外（框底/框顶已按图注裁过）。落在框**里面**的 caption 是
+      // 分类器把图内文字（"i>=NumInst"、"Sequential simulation"）误判成了图注，
+      // 所以这里对 caption 用更严的 90% 门槛，其余角色 80%。
+      const frac = p.role === 'caption' ? 0.9 : 0.8;
+      for (const b of boxes) {
+        const inter = areaOf(intersect(p.bbox, b));
+        if (inter < frac * a) continue;
+        p.prevRole = p.role;
+        p.role = 'figure';
+        marked += 1;
+        local += 1;
+        break;
+      }
+    }
+    if (local) touched += 1;
+  }
+  return { marked, pages: touched };
+}
+
+/**
  * 版心（栏）吸附：把段落的 x 范围按 40pt 容差聚成栏，返回包含 xc 的那一栏的 [x0,x1]。
  * 通栏正文（宽度超过 0.8 页宽）不算栏；找不到返回 null。
  * @param {Array<{role:string, bbox:number[]}>} paras

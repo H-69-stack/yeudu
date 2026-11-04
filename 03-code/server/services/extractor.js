@@ -16,7 +16,7 @@ import { createLogger } from '../logger.js';
 import { absFromRel } from './storage.js';
 import { buildPagesFromRaw } from './pdf/buildPages.js';
 import { buildVocabulary, restoreSpacesInItems } from './pdf/spaceFix.js';
-import { FIGURE_VERSION, attachCaptionAnchors, collectInkBoxes, detectPageFigures } from './pdf/figures.js';
+import { FIGURE_VERSION, attachCaptionAnchors, attachLabelClusters, markFigureSegments, collectInkBoxes, detectPageFigures } from './pdf/figures.js';
 import { indexSegments, deleteIndexForAsset, deleteTranslationIndexForAsset } from './fts.js';
 import { buildCacheKey } from './translate/cacheKey.js';
 
@@ -27,7 +27,7 @@ const log = createLogger('extractor');
  * v5：图注独立成 caption、子段 bbox 按字符数比例切分（不再复用块级包围盒）、
  *     每页写 `page_figures`、payload 带每页真实宽高。
  */
-export const EXTRACTOR_VERSION = 5;
+export const EXTRACTOR_VERSION = 6;
 export const PDFJS_VERSION = '6.4.299';
 
 let pdfjsModule = null;
@@ -245,11 +245,18 @@ export async function extractAsset(assetId, opts = {}) {
   // 只能靠「图注上方的空白区」补出来。
   const anchor = attachCaptionAnchors(figures, built);
   figureStats.captionAnchors = anchor.added;
+  // 第三遍图区：图内标注聚簇。示意图的标注会一直压到图注边上（gap<60pt），
+  // 只靠图注反推会整页失效（asset 4 p9 的 Fig. 6 就是），这里用 figure-label 的连通簇补框。
+  const clustered = attachLabelClusters(figures, built);
+  figureStats.labelClusters = clustered.added;
   for (const page of built) {
     const boxes = figures.get(page.pageNo) || [];
     if (boxes.length) figureStats.pagesWithFigures += 1;
     figureStats.boxes += boxes.length;
   }
+  // 图框内的段改判 role='figure'：不送翻、不渲染文字，图区整块以 PDF 原图贴回。
+  const figMark = markFigureSegments(figures, built);
+  figureStats.figureSegments = figMark.marked;
 
   const totalPages = built.length;
   const pagesWithText = built.filter((p) => p.paras.some((x) => x.text.trim().length > 0)).length;
