@@ -646,7 +646,7 @@ export class SheetPage {
         if (wide) {
           // 整页宽的块尽量留在原位；但别为了"还原原位"把纸撑高——顶到页底就往上收
           const cap = Math.max(marginY, pageBottom - wide.height);
-          const y = bumpAny(cursor, wide);
+          const y = bumpAny(Math.max(cursor, Math.min(wide.top0, cap)), wide);
           tops.set(wide, y);
           placed.push(rectOf(wide, y));
           cursor = Math.max(cursor, y + wide.height);
@@ -658,7 +658,7 @@ export class SheetPage {
           let prev = null;
           for (const rec of list) {
             const gap = prev == null ? 0 : Math.max(1.5, (rec.heading ? 1.05 : 0.42) * rec.fs);
-            const base = prev == null ? cursor : prev + gap;
+            const base = prev == null ? Math.max(cursor, rec.top0) : prev + gap;
             const y = bumpAny(base, rec);
             tops.set(rec, y);
             placed.push(rectOf(rec, y));
